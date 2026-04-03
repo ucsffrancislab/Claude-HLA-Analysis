@@ -62,6 +62,42 @@ python -m hla_analysis \
 
 ## Input File Format
 
+### HLA Dosage — VCF (.vcf.gz) *(recommended)*
+
+The pipeline natively reads imputed VCF files from Michigan Imputation Server (or similar):
+
+```bash
+# Auto-detected from .vcf.gz extension
+python -m hla_analysis \
+  --dosage-files cidr.chr6.dose.vcf.gz i370.chr6.dose.vcf.gz \
+  --covariate-files cidr_cov.csv i370_cov.csv \
+  --dataset-names CIDR I370
+```
+
+**Expected VCF structure:**
+- FORMAT field `GT:HDS:GP:DS` — the **DS** (dosage) sub-field is extracted by default
+- Variant IDs in the ID column classify the type:
+  - `HLA_A*01`, `HLA_A*02:01` → classical alleles (kept by default)
+  - `AA_A_9_V`, `AA_DRB1_11_S` → amino acid variants (kept by default)
+  - `SNP_*` → HLA-region SNPs (excluded unless `--include-snps`)
+  - `rs*` → imputed SNPs (always excluded)
+- Sample IDs from columns 10+ of the `#CHROM` header line
+- Files may be bgzipped (`.vcf.gz`) or plain text (`.vcf`)
+- Variant IDs with `*` separators are automatically normalised to `_` for internal consistency
+
+**VCF-specific options:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--dosage-format` | auto | `auto` (detect from extension), `csv`, or `vcf` |
+| `--vcf-field` | DS | FORMAT sub-field to extract |
+| `--vcf-filter-prefixes` | HLA_ AA_ | Variant-ID prefixes to keep |
+| `--include-snps` | off | Also keep `SNP_*` variants |
+
+### HLA Dosage — CSV
+
+Pre-extracted dosage matrices in CSV format (one per dataset):
+
 ### Covariate CSV
 
 | Column | Type | Description |
@@ -296,6 +332,7 @@ hla_analysis/
 │   ├── meta_analysis.py     # Fixed/random effects meta-analysis
 │   ├── visualization.py     # Manhattan, forest, heatmap, sensitivity plots
 │   ├── sensitivity.py       # Sensitivity comparison tables
+│   ├── vcf_parser.py        # VCF dosage file reader
 │   └── utils.py             # Shared utilities, FDR, encoding
 ├── tests/
 │   ├── conftest.py          # Fixtures & synthetic data generators

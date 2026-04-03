@@ -68,6 +68,26 @@ Examples:
         help="Output directory (default: results/).",
     )
 
+    # ── VCF Options ──
+    vcf_group = parser.add_argument_group("VCF Options")
+    vcf_group.add_argument(
+        "--dosage-format", default="auto", choices=["auto", "csv", "vcf"],
+        help="Input dosage format: 'auto' detects from extension, 'csv' for CSV, "
+             "'vcf' for VCF/VCF.GZ (default: auto).",
+    )
+    vcf_group.add_argument(
+        "--vcf-field", default="DS",
+        help="FORMAT sub-field to extract from VCF files (default: DS).",
+    )
+    vcf_group.add_argument(
+        "--vcf-filter-prefixes", nargs="+", default=["HLA_", "AA_"],
+        help="Variant-ID prefixes to keep when parsing VCF (default: HLA_ AA_).",
+    )
+    vcf_group.add_argument(
+        "--include-snps", action="store_true", default=False,
+        help="Also keep SNP_* variants from VCF files.",
+    )
+
     # ── Analysis Selection ──
     analysis_group = parser.add_argument_group("Analysis Selection")
     analysis_group.add_argument(
@@ -226,6 +246,10 @@ def parse_args(argv: Optional[List[str]] = None) -> AnalysisConfig:
         survival_covariates=args.survival_covariates,
         covariate_strategies=args.covariate_strategies,
         sensitivity_analysis=args.sensitivity_analysis,
+        dosage_format=args.dosage_format,
+        vcf_field=args.vcf_field,
+        vcf_filter_prefixes=args.vcf_filter_prefixes,
+        include_snps=args.include_snps,
         min_carriers=args.min_carriers,
         min_events=args.min_events,
         missingness_threshold=args.missingness_threshold,

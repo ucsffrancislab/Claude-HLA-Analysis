@@ -114,6 +114,14 @@ class AnalysisConfig:
         Logging level.
     seed : int
         Random seed for reproducibility.
+    dosage_format : str
+        Input format: 'auto' (detect from extension), 'csv', or 'vcf'.
+    vcf_field : str
+        FORMAT sub-field to extract from VCF (default 'DS').
+    vcf_filter_prefixes : list of str
+        Variant-ID prefixes to keep when parsing VCF.
+    include_snps : bool
+        If True, also keep SNP_* variants from VCF.
     cox_solver : str
         Cox solver to use: 'custom' or 'lifelines'.
     cox_penalizer : float
@@ -143,6 +151,12 @@ class AnalysisConfig:
 
     # Sensitivity analysis
     sensitivity_analysis: bool = False
+
+    # VCF input options
+    dosage_format: str = "auto"          # "auto", "csv", or "vcf"
+    vcf_field: str = "DS"                # FORMAT sub-field to extract
+    vcf_filter_prefixes: List[str] = field(default_factory=lambda: ["HLA_", "AA_"])
+    include_snps: bool = False           # also keep SNP_* variants from VCF
 
     # Thresholds
     min_carriers: int = 10
@@ -235,6 +249,11 @@ class AnalysisConfig:
             raise ValueError("missingness_threshold must be in (0, 1]")
         if self.chunk_size < 1:
             raise ValueError("chunk_size must be >= 1")
+        if self.dosage_format not in ("auto", "csv", "vcf"):
+            raise ValueError(
+                f"Unknown dosage_format: {self.dosage_format!r}. "
+                "Must be 'auto', 'csv', or 'vcf'."
+            )
 
     def generate_sensitivity_strategies(
         self,

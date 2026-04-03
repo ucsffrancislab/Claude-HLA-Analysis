@@ -10,6 +10,7 @@ import pandas as pd
 
 from hla_analysis.config import AnalysisConfig, STRATA_DEFINITIONS
 from hla_analysis.utils import encode_sex, encode_grade, classify_features
+from hla_analysis.vcf_parser import detect_dosage_format, parse_vcf_to_dosage_df
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +64,8 @@ class DataLoader:
         cov = pd.read_csv(covariate_path)
         self._validate_covariates(cov, dataset_name)
 
-        # Load dosage data
-        dosage_df = pd.read_csv(dosage_path)
+        # Load dosage data — auto-detect CSV vs VCF
+        dosage_df = self._load_dosage(dosage_path, dataset_name)
         if "sample_id" not in dosage_df.columns:
             raise ValueError(
                 f"Dosage file {dosage_path} must have a 'sample_id' column"
@@ -147,6 +148,39 @@ class DataLoader:
             )
         if "case" not in cov.columns:
             logger.warning("Dataset %s: no 'case' column found in covariates", dataset_name)
+
+    def _load_dosage(self, dosage_path: str, dataset_name: str) -> pd.DataFrame:
+        """Load a dosage file, dispatching to CSV or VCF parser.
+
+        Parameters
+        ----------
+        dosage_path : str
+            Path to dosage file (CSV or VCF/VCF.GZ).
+        dataset_name : str
+            Name for logging.
+
+        Returns
+        -------
+        pd.DataFrame
+            Dosage data with ``sample_id`` column + feature columns.
+        """
+        fmt = self.config.dosage_format
+        if fmt == "auto":
+            fmt = detect_dosage_format(dosage_path)
+
+        if fmt == "vcf":
+            logger.info("Dataset %s: loading VCF dosage from %s", dataset_name, dosage_path)
+            df = parse_vcf_to_dosage_df(
+                dosage_path,
+                field=self.config.vcf_field,
+                filter_prefixes=self.config.vcf_filter_prefixes,
+                include_snps=self.config.include_snps,
+                normalize_ids=True,
+            )
+            return df
+        else:
+            logger.info("Dataset %s: loading CSV dosage from %s", dataset_name, dosage_path)
+            return pd.read_csv(dosage_path)
 
     def load_all_datasets(self) -> List[Dict]:
         """Load all datasets specified in config.

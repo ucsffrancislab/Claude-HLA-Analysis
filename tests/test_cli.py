@@ -163,3 +163,57 @@ class TestParseArgs:
         assert "sensitivity" in config.plots
         assert config.sensitivity_analysis is True
 
+    def test_dosage_format_auto_default(self, tmp_path):
+        """Test dosage_format defaults to auto."""
+        (tmp_path / "d.csv").touch()
+        (tmp_path / "c.csv").touch()
+        config = parse_args([
+            "--dosage-files", str(tmp_path / "d.csv"),
+            "--covariate-files", str(tmp_path / "c.csv"),
+        ])
+        assert config.dosage_format == "auto"
+
+    def test_dosage_format_vcf(self, tmp_path):
+        """Test explicit --dosage-format vcf."""
+        (tmp_path / "d.vcf.gz").touch()
+        (tmp_path / "c.csv").touch()
+        config = parse_args([
+            "--dosage-files", str(tmp_path / "d.vcf.gz"),
+            "--covariate-files", str(tmp_path / "c.csv"),
+            "--dosage-format", "vcf",
+        ])
+        assert config.dosage_format == "vcf"
+
+    def test_include_snps_flag(self, tmp_path):
+        """Test --include-snps flag."""
+        (tmp_path / "d.csv").touch()
+        (tmp_path / "c.csv").touch()
+        config = parse_args([
+            "--dosage-files", str(tmp_path / "d.csv"),
+            "--covariate-files", str(tmp_path / "c.csv"),
+            "--include-snps",
+        ])
+        assert config.include_snps is True
+
+    def test_vcf_field_option(self, tmp_path):
+        """Test --vcf-field option."""
+        (tmp_path / "d.csv").touch()
+        (tmp_path / "c.csv").touch()
+        config = parse_args([
+            "--dosage-files", str(tmp_path / "d.csv"),
+            "--covariate-files", str(tmp_path / "c.csv"),
+            "--vcf-field", "HDS",
+        ])
+        assert config.vcf_field == "HDS"
+
+    def test_vcf_filter_prefixes(self, tmp_path):
+        """Test --vcf-filter-prefixes option."""
+        (tmp_path / "d.csv").touch()
+        (tmp_path / "c.csv").touch()
+        config = parse_args([
+            "--dosage-files", str(tmp_path / "d.csv"),
+            "--covariate-files", str(tmp_path / "c.csv"),
+            "--vcf-filter-prefixes", "HLA_", "AA_", "SNP_",
+        ])
+        assert config.vcf_filter_prefixes == ["HLA_", "AA_", "SNP_"]
+
