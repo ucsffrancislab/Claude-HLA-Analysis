@@ -50,40 +50,116 @@ def fast_cox_single(
     dict
         beta, se, hr, ci_lower, ci_upper, pvalue, concordance, converged, log_likelihood.
     """
-    n, p = X.shape
-    beta = np.zeros(p, dtype=np.float64)
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+        n, p = X.shape
+        beta = np.zeros(p, dtype=np.float64)
 
-    # Sort by time descending for efficient risk-set computation
-    sort_idx = np.argsort(-time)
-    time_s = time[sort_idx]
-    event_s = event[sort_idx]
-    X_s = X[sort_idx]
+        # Sort by time descending for efficient risk-set computation
+        sort_idx = np.argsort(-time)
+        time_s = time[sort_idx]
+        event_s = event[sort_idx]
+        X_s = X[sort_idx]
 
-    converged = False
-    prev_ll = -np.inf
+        converged = False
+        prev_ll = -np.inf
 
-    for iteration in range(max_iter):
-        # Compute exp(X*beta) with overflow protection
+        for iteration in range(max_iter):
+            # Compute exp(X*beta) with overflow protection
+            eta = X_s @ beta
+            eta = np.clip(eta, -500, 500)
+            exp_eta = np.exp(eta)
+
+            # Cumulative sums (over risk sets) — since sorted descending by time,
+            # cumsum gives the risk set sums
+            cum_exp_eta = np.cumsum(exp_eta)
+            cum_X_exp_eta = np.cumsum(X_s * exp_eta[:, np.newaxis], axis=0)
+            cum_XX_exp_eta = np.zeros((n, p, p), dtype=np.float64)
+            for i in range(n):
+                cum_XX_exp_eta[i] = (
+                    (cum_XX_exp_eta[i - 1] if i > 0 else np.zeros((p, p)))
+                    + np.outer(X_s[i], X_s[i]) * exp_eta[i]
+                )
+
+            # Log partial likelihood, gradient, Hessian
+            ll = 0.0
+            grad = np.zeros(p, dtype=np.float64)
+            hess = np.zeros((p, p), dtype=np.float64)
+
+            for i in range(n):
+                if event_s[i] != 1:
+                    continue
+                r = cum_exp_eta[i]
+                if r < 1e-300:
+                    continue
+                rX = cum_X_exp_eta[i]
+                rXX = cum_XX_exp_eta[i]
+
+                ll += eta[i] - np.log(r)
+                grad += X_s[i] - rX / r
+                hess -= rXX / r - np.outer(rX, rX) / (r * r)
+
+            # Check convergence
+            if np.isnan(ll) or np.isinf(ll):
+                break
+
+            if abs(ll - prev_ll) < tol and iteration > 0:
+                converged = True
+                break
+            prev_ll = ll
+
+            # Newton-Raphson step with step-halving
+            try:
+                step = np.linalg.solve(hess, grad)  # hess is negative semi-definite
+                # hess * step = grad => step = hess^{-1} * grad
+                # Since hess is the negative Hessian of ll, we want beta -= hess^{-1} * grad
+                # But we defined hess as the actual negative Hessian, so:
+            except np.linalg.LinAlgError:
+                # Singular Hessian — add small ridge
+                try:
+                    step = np.linalg.solve(
+                        hess - 1e-6 * np.eye(p), grad
+                    )
+                except np.linalg.LinAlgError:
+                    break
+
+            # Step-halving
+            step_size = 1.0
+            for _ in range(20):
+                beta_new = beta - step_size * step
+                eta_new = X_s @ beta_new
+                eta_new = np.clip(eta_new, -500, 500)
+                exp_eta_new = np.exp(eta_new)
+                cum_exp_eta_new = np.cumsum(exp_eta_new)
+
+                ll_new = 0.0
+                for i in range(n):
+                    if event_s[i] == 1:
+                        r = cum_exp_eta_new[i]
+                        if r > 1e-300:
+                            ll_new += eta_new[i] - np.log(r)
+
+                if ll_new > ll - 1e-10:
+                    beta = beta_new
+                    break
+                step_size *= 0.5
+            else:
+                beta = beta - step_size * step  # use smallest step
+
+        # Compute standard errors from the observed information matrix
+        # Recompute final Hessian
         eta = X_s @ beta
         eta = np.clip(eta, -500, 500)
         exp_eta = np.exp(eta)
-
-        # Cumulative sums (over risk sets) — since sorted descending by time,
-        # cumsum gives the risk set sums
         cum_exp_eta = np.cumsum(exp_eta)
         cum_X_exp_eta = np.cumsum(X_s * exp_eta[:, np.newaxis], axis=0)
-        cum_XX_exp_eta = np.zeros((n, p, p), dtype=np.float64)
+        cum_XX_exp_eta_final = np.zeros((n, p, p), dtype=np.float64)
         for i in range(n):
-            cum_XX_exp_eta[i] = (
-                (cum_XX_exp_eta[i - 1] if i > 0 else np.zeros((p, p)))
+            cum_XX_exp_eta_final[i] = (
+                (cum_XX_exp_eta_final[i - 1] if i > 0 else np.zeros((p, p)))
                 + np.outer(X_s[i], X_s[i]) * exp_eta[i]
             )
 
-        # Log partial likelihood, gradient, Hessian
-        ll = 0.0
-        grad = np.zeros(p, dtype=np.float64)
-        hess = np.zeros((p, p), dtype=np.float64)
-
+        hess_final = np.zeros((p, p), dtype=np.float64)
         for i in range(n):
             if event_s[i] != 1:
                 continue
@@ -91,124 +167,49 @@ def fast_cox_single(
             if r < 1e-300:
                 continue
             rX = cum_X_exp_eta[i]
-            rXX = cum_XX_exp_eta[i]
+            rXX = cum_XX_exp_eta_final[i]
+            hess_final -= rXX / r - np.outer(rX, rX) / (r * r)
 
-            ll += eta[i] - np.log(r)
-            grad += X_s[i] - rX / r
-            hess -= rXX / r - np.outer(rX, rX) / (r * r)
-
-        # Check convergence
-        if np.isnan(ll) or np.isinf(ll):
-            break
-
-        if abs(ll - prev_ll) < tol and iteration > 0:
-            converged = True
-            break
-        prev_ll = ll
-
-        # Newton-Raphson step with step-halving
+        # Variance-covariance matrix
         try:
-            step = np.linalg.solve(hess, grad)  # hess is negative semi-definite
-            # hess * step = grad => step = hess^{-1} * grad
-            # Since hess is the negative Hessian of ll, we want beta -= hess^{-1} * grad
-            # But we defined hess as the actual negative Hessian, so:
+            var_cov = np.linalg.inv(-hess_final)
+            se = np.sqrt(np.maximum(np.diag(var_cov), 0.0))
         except np.linalg.LinAlgError:
-            # Singular Hessian — add small ridge
-            try:
-                step = np.linalg.solve(
-                    hess - 1e-6 * np.eye(p), grad
-                )
-            except np.linalg.LinAlgError:
-                break
+            se = np.full(p, np.nan)
 
-        # Step-halving
-        step_size = 1.0
-        for _ in range(20):
-            beta_new = beta - step_size * step
-            eta_new = X_s @ beta_new
-            eta_new = np.clip(eta_new, -500, 500)
-            exp_eta_new = np.exp(eta_new)
-            cum_exp_eta_new = np.cumsum(exp_eta_new)
+        # Results for the HLA feature (first column)
+        beta_hla = float(beta[0])
+        se_hla = float(se[0])
+        hr = safe_exp(beta_hla)
+        ci_lower = safe_exp(beta_hla - 1.96 * se_hla) if not np.isnan(se_hla) else np.nan
+        ci_upper = safe_exp(beta_hla + 1.96 * se_hla) if not np.isnan(se_hla) else np.nan
 
-            ll_new = 0.0
-            for i in range(n):
-                if event_s[i] == 1:
-                    r = cum_exp_eta_new[i]
-                    if r > 1e-300:
-                        ll_new += eta_new[i] - np.log(r)
-
-            if ll_new > ll - 1e-10:
-                beta = beta_new
-                break
-            step_size *= 0.5
+        if not np.isnan(se_hla) and se_hla > 0:
+            z = beta_hla / se_hla
+            pvalue = float(2 * sp_stats.norm.sf(abs(z)))
         else:
-            beta = beta - step_size * step  # use smallest step
+            pvalue = np.nan
 
-    # Compute standard errors from the observed information matrix
-    # Recompute final Hessian
-    eta = X_s @ beta
-    eta = np.clip(eta, -500, 500)
-    exp_eta = np.exp(eta)
-    cum_exp_eta = np.cumsum(exp_eta)
-    cum_X_exp_eta = np.cumsum(X_s * exp_eta[:, np.newaxis], axis=0)
-    cum_XX_exp_eta_final = np.zeros((n, p, p), dtype=np.float64)
-    for i in range(n):
-        cum_XX_exp_eta_final[i] = (
-            (cum_XX_exp_eta_final[i - 1] if i > 0 else np.zeros((p, p)))
-            + np.outer(X_s[i], X_s[i]) * exp_eta[i]
-        )
+        # Concordance
+        try:
+            risk_scores = X[sort_idx] @ beta  # unsorted risk scores would need re-indexing
+            # Use original order
+            risk_scores_orig = X @ beta
+            conc = compute_concordance(time, event, risk_scores_orig)
+        except Exception:
+            conc = np.nan
 
-    hess_final = np.zeros((p, p), dtype=np.float64)
-    for i in range(n):
-        if event_s[i] != 1:
-            continue
-        r = cum_exp_eta[i]
-        if r < 1e-300:
-            continue
-        rX = cum_X_exp_eta[i]
-        rXX = cum_XX_exp_eta_final[i]
-        hess_final -= rXX / r - np.outer(rX, rX) / (r * r)
-
-    # Variance-covariance matrix
-    try:
-        var_cov = np.linalg.inv(-hess_final)
-        se = np.sqrt(np.maximum(np.diag(var_cov), 0.0))
-    except np.linalg.LinAlgError:
-        se = np.full(p, np.nan)
-
-    # Results for the HLA feature (first column)
-    beta_hla = float(beta[0])
-    se_hla = float(se[0])
-    hr = safe_exp(beta_hla)
-    ci_lower = safe_exp(beta_hla - 1.96 * se_hla) if not np.isnan(se_hla) else np.nan
-    ci_upper = safe_exp(beta_hla + 1.96 * se_hla) if not np.isnan(se_hla) else np.nan
-
-    if not np.isnan(se_hla) and se_hla > 0:
-        z = beta_hla / se_hla
-        pvalue = float(2 * sp_stats.norm.sf(abs(z)))
-    else:
-        pvalue = np.nan
-
-    # Concordance
-    try:
-        risk_scores = X[sort_idx] @ beta  # unsorted risk scores would need re-indexing
-        # Use original order
-        risk_scores_orig = X @ beta
-        conc = compute_concordance(time, event, risk_scores_orig)
-    except Exception:
-        conc = np.nan
-
-    return {
-        "beta": beta_hla,
-        "se": se_hla,
-        "hr": float(hr),
-        "ci_lower": float(ci_lower),
-        "ci_upper": float(ci_upper),
-        "pvalue": pvalue,
-        "concordance": float(conc),
-        "converged": converged,
-        "log_likelihood": float(prev_ll),
-    }
+        return {
+            "beta": beta_hla,
+            "se": se_hla,
+            "hr": float(hr),
+            "ci_lower": float(ci_lower),
+            "ci_upper": float(ci_upper),
+            "pvalue": pvalue,
+            "concordance": float(conc),
+            "converged": converged,
+            "log_likelihood": float(prev_ll),
+        }
 
 
 def _fit_survival_single(
