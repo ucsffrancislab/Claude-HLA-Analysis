@@ -92,7 +92,7 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
     np.random.seed(config.seed)
 
     logger.info("=" * 60)
-    logger.info("HLA Analysis Pipeline v1.1.0")
+    logger.info("HLA Analysis Pipeline v1.2.1")
     logger.info("=" * 60)
     logger.info("Workers: %d, Memory limit: %.1f GB, Chunk size: %d",
                 config.workers, config.memory_limit, config.chunk_size)
@@ -331,6 +331,7 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
 def main(argv=None):
     """CLI entry point."""
     config = parse_args(argv)
+    os.makedirs(config.output_dir, exist_ok=True)
     setup_logging(config.log_level, os.path.join(config.output_dir, "pipeline.log"))
     run_pipeline(config)
 
