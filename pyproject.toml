@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hla-analysis"
+version = "1.0.0"
+description = "HLA Allele Risk & Survival Analysis Pipeline with Meta-Analysis"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "HLA Analysis Team"},
+]
+keywords = ["HLA", "genetics", "GWAS", "survival-analysis", "meta-analysis", "immunogenetics"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = [
+    "pandas>=1.5",
+    "numpy>=1.21",
+    "scipy>=1.9",
+    "statsmodels>=0.13",
+    "lifelines>=0.27",
+    "matplotlib>=3.5",
+    "seaborn>=0.12",
+    "tqdm>=4.60",
+]
+
+[project.optional-dependencies]
+hpc = ["psutil>=5.9"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.1"]
+all = ["psutil>=5.9", "pytest>=7.0", "pytest-cov>=4.0"]
+
+[project.scripts]
+hla-analysis = "hla_analysis.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/hla-analysis/hla-analysis"
+Documentation = "https://github.com/hla-analysis/hla-analysis#readme"
+Repository = "https://github.com/hla-analysis/hla-analysis"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = [
+    'slow: marks tests as slow (deselect with -m "not slow")',
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"

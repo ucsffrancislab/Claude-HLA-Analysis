@@ -1,0 +1,9 @@
+pandas>=1.5
+numpy>=1.21
+scipy>=1.9
+statsmodels>=0.13
+lifelines>=0.27
+matplotlib>=3.5
+seaborn>=0.12
+tqdm>=4.60
+psutil>=5.9
