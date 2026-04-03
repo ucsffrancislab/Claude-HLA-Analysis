@@ -9,7 +9,11 @@ and inverse-variance weighted meta-analysis across multiple cohorts.
 Supports both CSV and VCF (.vcf.gz) dosage input formats.
 """
 
-__version__ = "1.2.0"
+from importlib.metadata import version as _version
+try:
+    __version__ = _version("hla-analysis")
+except Exception:
+    __version__ = "unknown"  # not installed as a package
 __author__ = "HLA Analysis Team"
 __license__ = "MIT"
 
