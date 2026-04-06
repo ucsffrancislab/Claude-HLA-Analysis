@@ -6,7 +6,8 @@ A production-grade Python package for HLA allele association studies,
 implementing logistic regression (risk), Cox proportional hazards (survival),
 and inverse-variance weighted meta-analysis across multiple cohorts.
 
-Supports both CSV and VCF (.vcf.gz) dosage input formats.
+Supports both CSV and VCF (.vcf.gz) dosage input formats, including
+haplotype construction from phased HDS data.
 """
 
 from importlib.metadata import version as _version
@@ -25,6 +26,7 @@ from hla_analysis.meta_analysis import MetaAnalyzer
 from hla_analysis.visualization import Visualizer
 from hla_analysis.sensitivity import create_sensitivity_comparison
 from hla_analysis.vcf_parser import parse_vcf_dosage, parse_vcf_to_dosage_df
+from hla_analysis.haplotype import build_haplotype_dosage_matrix, call_haplotypes
 
 __all__ = [
     "AnalysisConfig",
@@ -38,4 +40,6 @@ __all__ = [
     "create_sensitivity_comparison",
     "parse_vcf_dosage",
     "parse_vcf_to_dosage_df",
+    "build_haplotype_dosage_matrix",
+    "call_haplotypes",
 ]

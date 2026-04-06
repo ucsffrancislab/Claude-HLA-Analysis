@@ -255,3 +255,115 @@ def parse_vcf_to_dosage_df(
         rename = {c: normalize_variant_id(c) for c in df.columns if c != "sample_id"}
         df = df.rename(columns=rename)
     return df
+
+
+def parse_vcf_hds(
+    vcf_path: str,
+    filter_prefixes: Optional[Sequence[str]] = None,
+    log_every: int = 5000,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Parse a VCF file and extract per-sample haploid dosage (HDS) values.
+
+    The HDS FORMAT field contains two comma-separated floats per sample,
+    representing the dosage on chromosome 1 and chromosome 2.
+
+    Parameters
+    ----------
+    vcf_path : str
+        Path to a ``.vcf`` or ``.vcf.gz`` file.
+    filter_prefixes : sequence of str, optional
+        Variant-ID prefixes to keep.  ``None`` uses ``("HLA_", "AA_")``.
+    log_every : int
+        Log progress every *n* variants.
+
+    Returns
+    -------
+    hds_hap1 : pd.DataFrame
+        Rows = samples (``sample_id`` as first column), remaining columns =
+        variant IDs, values = haploid dosage for chromosome 1 (float32).
+    hds_hap2 : pd.DataFrame
+        Same structure, haploid dosage for chromosome 2.
+    """
+    if filter_prefixes is None:
+        filter_prefixes = DEFAULT_PREFIXES
+    prefixes: Tuple[str, ...] = tuple(filter_prefixes)
+
+    logger.info("Parsing VCF HDS: %s (prefixes=%s)", vcf_path, prefixes)
+
+    sample_ids: List[str] = []
+    variant_ids: List[str] = []
+    hap1_columns: List[np.ndarray] = []
+    hap2_columns: List[np.ndarray] = []
+
+    n_variants_total = 0
+    n_variants_kept = 0
+    hds_index: Optional[int] = None
+    cached_format: Optional[str] = None
+
+    with _open_vcf(vcf_path) as fh:
+        for line in fh:
+            if line.startswith("##"):
+                continue
+
+            if line.startswith("#CHROM") or line.startswith("#chrom"):
+                cols = line.rstrip("\n\r").split("\t")
+                sample_ids = cols[9:]
+                logger.info("VCF header: %d samples detected", len(sample_ids))
+                continue
+
+            cols = line.rstrip("\n\r").split("\t")
+            n_variants_total += 1
+            variant_id = cols[2]
+
+            if not variant_id.startswith(prefixes):
+                continue
+
+            n_variants_kept += 1
+
+            fmt = cols[8]
+            if fmt != cached_format:
+                hds_index = _find_field_index(fmt, "HDS")
+                cached_format = fmt
+
+            n_samples = len(sample_ids)
+            h1 = np.empty(n_samples, dtype=np.float32)
+            h2 = np.empty(n_samples, dtype=np.float32)
+
+            for i, genotype_str in enumerate(cols[9:]):
+                try:
+                    hds_str = genotype_str.split(":")[hds_index]
+                    parts = hds_str.split(",")
+                    h1[i] = float(parts[0])
+                    h2[i] = float(parts[1])
+                except (IndexError, ValueError):
+                    h1[i] = np.nan
+                    h2[i] = np.nan
+
+            variant_ids.append(variant_id)
+            hap1_columns.append(h1)
+            hap2_columns.append(h2)
+
+            if log_every > 0 and n_variants_kept % log_every == 0:
+                logger.info(
+                    "  … parsed %d/%d variants (kept %d)",
+                    n_variants_total, n_variants_total, n_variants_kept,
+                )
+
+    logger.info(
+        "VCF HDS parsing complete: %d variants total, %d kept (%d samples)",
+        n_variants_total, n_variants_kept, len(sample_ids),
+    )
+
+    if not variant_ids:
+        logger.warning("No variants matched the filter prefixes in %s", vcf_path)
+        empty = pd.DataFrame({"sample_id": sample_ids})
+        return empty, empty
+
+    mat1 = np.column_stack(hap1_columns)
+    mat2 = np.column_stack(hap2_columns)
+    df1 = pd.DataFrame(mat1, columns=variant_ids)
+    df1.insert(0, "sample_id", sample_ids)
+    df2 = pd.DataFrame(mat2, columns=variant_ids)
+    df2.insert(0, "sample_id", sample_ids)
+
+    return df1, df2

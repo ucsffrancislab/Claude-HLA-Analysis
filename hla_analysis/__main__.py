@@ -9,7 +9,7 @@ import logging
 import os
 import sys
 import time
-from typing import List, Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -365,8 +365,9 @@ def _create_combined_summary(
     aa_results: Dict[str, pd.DataFrame],
     output_dir: str,
     fdr_threshold: float = 0.05,
+    haplotype_results: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> None:
-    """Create a combined summary comparing allele and amino acid results.
+    """Create a combined summary comparing allele, amino acid, and haplotype results.
 
     Parameters
     ----------
@@ -378,6 +379,8 @@ def _create_combined_summary(
         Output directory for combined results.
     fdr_threshold : float
         FDR threshold for significance.
+    haplotype_results : dict, optional
+        Results from haplotype analysis.
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -509,10 +512,65 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
                            os.path.join(config.output_dir, "amino_acids"))
         aa_results = _run_single_analysis(aa_config, datasets, "amino_acids")
 
+        # ── Haplotype analysis (optional) ──
+        haplotype_results = None
+        if config.haplotype_analysis:
+            logger.info("=" * 60)
+            logger.info("Running HAPLOTYPE analysis")
+            logger.info("=" * 60)
+
+            from hla_analysis.haplotype import build_haplotype_dosage_matrix
+
+            hap_datasets = []
+            for i, ds in enumerate(datasets):
+                vcf_path = config.dosage_files[i]
+                hap_dosage_df = build_haplotype_dosage_matrix(
+                    vcf_path,
+                    loci=config.haplotype_loci,
+                    resolution=config.haplotype_resolution,
+                    min_freq=config.min_haplotype_freq,
+                )
+                hap_features = [c for c in hap_dosage_df.columns if c != "sample_id"]
+                if not hap_features:
+                    logger.warning("Dataset %s: no haplotypes survived filtering", ds["dataset_name"])
+                    continue
+
+                # Merge with covariates on sample_id
+                cov = ds["covariates"]
+                merged = hap_dosage_df.merge(cov, on="sample_id", how="inner")
+                if len(merged) == 0:
+                    logger.warning("Dataset %s: no samples matched between haplotypes and covariates",
+                                   ds["dataset_name"])
+                    continue
+
+                hap_dosage_matrix = merged[hap_features].values.astype(np.float32)
+                cov_cols = [c for c in merged.columns if c not in hap_features and c != "sample_id"]
+                hap_cov = merged[["sample_id"] + cov_cols].copy()
+
+                hap_datasets.append({
+                    "dataset_name": ds["dataset_name"],
+                    "covariates": hap_cov,
+                    "dosage": hap_dosage_matrix,
+                    "feature_names": hap_features,
+                    "sample_ids": merged["sample_id"].tolist(),
+                })
+
+            if hap_datasets:
+                hap_config = AnalysisConfig(
+                    **{k: v for k, v in config.__dict__.items()
+                       if k not in ("output_dir",)}
+                )
+                object.__setattr__(hap_config, "output_dir",
+                                   os.path.join(config.output_dir, "haplotypes"))
+                haplotype_results = _run_single_analysis(hap_config, hap_datasets, "all")
+            else:
+                logger.warning("No haplotype datasets available for analysis")
+
         # ── Create combined summary ──
         combined_dir = os.path.join(config.output_dir, "combined")
         _create_combined_summary(
-            allele_results, aa_results, combined_dir, config.fdr_threshold
+            allele_results, aa_results, combined_dir, config.fdr_threshold,
+            haplotype_results=haplotype_results,
         )
 
         elapsed = time.time() - t_start
@@ -520,40 +578,40 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
         logger.info("Pipeline complete in %.1f seconds", elapsed)
         logger.info("=" * 60)
 
+        # Collect all result sets
+        all_result_sets = [allele_results, aa_results]
+        if haplotype_results is not None:
+            all_result_sets.append(haplotype_results)
+
         # Return merged results
         return {
             "risk_results": pd.concat(
-                [allele_results.get("risk_results", pd.DataFrame()),
-                 aa_results.get("risk_results", pd.DataFrame())],
+                [r.get("risk_results", pd.DataFrame()) for r in all_result_sets],
                 ignore_index=True,
             ),
             "survival_results": pd.concat(
-                [allele_results.get("survival_results", pd.DataFrame()),
-                 aa_results.get("survival_results", pd.DataFrame())],
+                [r.get("survival_results", pd.DataFrame()) for r in all_result_sets],
                 ignore_index=True,
             ),
             "risk_meta": pd.concat(
-                [allele_results.get("risk_meta", pd.DataFrame()),
-                 aa_results.get("risk_meta", pd.DataFrame())],
+                [r.get("risk_meta", pd.DataFrame()) for r in all_result_sets],
                 ignore_index=True,
             ),
             "survival_meta": pd.concat(
-                [allele_results.get("survival_meta", pd.DataFrame()),
-                 aa_results.get("survival_meta", pd.DataFrame())],
+                [r.get("survival_meta", pd.DataFrame()) for r in all_result_sets],
                 ignore_index=True,
             ),
             "summary_tables": {
-                **allele_results.get("summary_tables", {}),
-                **aa_results.get("summary_tables", {}),
+                k: v
+                for r in all_result_sets
+                for k, v in r.get("summary_tables", {}).items()
             },
             "sensitivity_risk": pd.concat(
-                [allele_results.get("sensitivity_risk", pd.DataFrame()),
-                 aa_results.get("sensitivity_risk", pd.DataFrame())],
+                [r.get("sensitivity_risk", pd.DataFrame()) for r in all_result_sets],
                 ignore_index=True,
             ),
             "sensitivity_survival": pd.concat(
-                [allele_results.get("sensitivity_survival", pd.DataFrame()),
-                 aa_results.get("sensitivity_survival", pd.DataFrame())],
+                [r.get("sensitivity_survival", pd.DataFrame()) for r in all_result_sets],
                 ignore_index=True,
             ),
         }

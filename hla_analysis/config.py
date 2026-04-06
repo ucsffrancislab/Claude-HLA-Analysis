@@ -202,6 +202,12 @@ class AnalysisConfig:
     # Feature type splitting
     split_by_feature_type: bool = True
 
+    # Haplotype analysis
+    haplotype_analysis: bool = False
+    haplotype_loci: List[str] = field(default_factory=lambda: ["A", "B", "C", "DRB1", "DQB1"])
+    haplotype_resolution: str = "4digit"  # "2digit", "4digit", or "both"
+    min_haplotype_freq: float = 0.01
+
     # Logging & reproducibility
     log_level: str = "INFO"
     seed: int = 42
@@ -274,6 +280,18 @@ class AnalysisConfig:
             raise ValueError("missingness_threshold must be in (0, 1]")
         if self.chunk_size < 1:
             raise ValueError("chunk_size must be >= 1")
+        # Haplotype validation
+        valid_resolutions = {"2digit", "4digit", "both"}
+        if self.haplotype_resolution not in valid_resolutions:
+            raise ValueError(
+                f"Unknown haplotype_resolution: {self.haplotype_resolution!r}. "
+                f"Must be one of {sorted(valid_resolutions)}"
+            )
+        if not 0 <= self.min_haplotype_freq <= 1:
+            raise ValueError("min_haplotype_freq must be in [0, 1]")
+        if self.haplotype_loci is not None and not isinstance(self.haplotype_loci, list):
+            raise ValueError("haplotype_loci must be a list of strings")
+
         if self.dosage_format not in ("auto", "csv", "vcf"):
             raise ValueError(
                 f"Unknown dosage_format: {self.dosage_format!r}. "

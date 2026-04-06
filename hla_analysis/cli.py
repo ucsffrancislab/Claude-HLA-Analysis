@@ -233,6 +233,27 @@ Examples:
         help="Maximum signals per panel in forest plots (default: 15).",
     )
 
+
+    # ── Haplotype Analysis ──
+    hap_group = parser.add_argument_group("Haplotype Analysis")
+    hap_group.add_argument(
+        "--haplotype-analysis", action="store_true", default=False,
+        help="Enable haplotype analysis (default: off).",
+    )
+    hap_group.add_argument(
+        "--haplotype-loci", nargs="+", default=["A", "B", "C", "DRB1", "DQB1"],
+        help="Gene loci for haplotype construction (default: A B C DRB1 DQB1).",
+    )
+    hap_group.add_argument(
+        "--haplotype-resolution", default="4digit",
+        choices=["2digit", "4digit", "both"],
+        help="Haplotype resolution: 2digit, 4digit, or both (default: 4digit).",
+    )
+    hap_group.add_argument(
+        "--min-haplotype-freq", type=float, default=0.01,
+        help="Minimum haplotype frequency threshold (default: 0.01 = 1%%).",
+    )
+
     # ── Miscellaneous ──
     misc_group = parser.add_argument_group("Miscellaneous")
     misc_group.add_argument(
@@ -307,6 +328,10 @@ def parse_args(argv: Optional[List[str]] = None) -> AnalysisConfig:
         cox_penalizer=args.cox_penalizer,
         cox_max_iter=args.cox_max_iter,
         cox_tol=args.cox_tol,
+        haplotype_analysis=args.haplotype_analysis,
+        haplotype_loci=args.haplotype_loci,
+        haplotype_resolution=args.haplotype_resolution,
+        min_haplotype_freq=args.min_haplotype_freq,
     )
 
     return config
