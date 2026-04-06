@@ -14,6 +14,7 @@ from typing import List, Dict, Tuple
 import numpy as np
 import pandas as pd
 
+from hla_analysis import __version__
 from hla_analysis.cli import parse_args
 from hla_analysis.config import AnalysisConfig, SensitivityStrategy
 from hla_analysis.data_loader import DataLoader, find_common_features
@@ -459,7 +460,7 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
     np.random.seed(config.seed)
 
     logger.info("=" * 60)
-    logger.info("HLA Analysis Pipeline v1.3.0")
+    logger.info("HLA Analysis Pipeline v%s", __version__)
     logger.info("=" * 60)
     logger.info("Workers: %d, Memory limit: %.1f GB, Chunk size: %d",
                 config.workers, config.memory_limit, config.chunk_size)
