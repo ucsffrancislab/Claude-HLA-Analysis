@@ -107,6 +107,14 @@ Examples:
         choices=list(FEATURE_TYPES.keys()),
         help="HLA feature types to include (default: all).",
     )
+    analysis_group.add_argument(
+        "--split-by-feature-type", action="store_true", default=True,
+        help="Run separate analyses for alleles and amino acid positions (default: True).",
+    )
+    analysis_group.add_argument(
+        "--no-split-by-feature-type", dest="split_by_feature_type", action="store_false",
+        help="Run a single combined analysis for all feature types.",
+    )
 
     # ── Covariates ──
     cov_group = parser.add_argument_group("Covariates")
@@ -118,7 +126,7 @@ Examples:
     cov_group.add_argument(
         "--survival-covariates", nargs="+",
         default=list(DEFAULT_SURVIVAL_COVARIATES),
-        help="Covariates for survival analysis (default: age sex grade treated).",
+        help="Covariates for survival analysis (default: age sex grade rad chemo).",
     )
     cov_group.add_argument(
         "--covariate-strategies", nargs="+",
@@ -155,6 +163,29 @@ Examples:
         "--meta-min-datasets", type=int, default=2,
         help="Min datasets for meta-analysis (default: 2).",
     )
+    thresh_group.add_argument(
+        "--maf-threshold-allele", type=float, default=0.01,
+        help="MAF threshold for classical HLA alleles (default: 0.01 = 1%%).",
+    )
+    thresh_group.add_argument(
+        "--maf-threshold-aa", type=float, default=0.005,
+        help="MAF threshold for amino acid positions (default: 0.005 = 0.5%%).",
+    )
+    thresh_group.add_argument(
+        "--min-imputation-r2", type=float, default=0.3,
+        help="Minimum imputation R² for feature inclusion (default: 0.3).",
+    )
+
+    # ── Firth Penalization ──
+    firth_group = parser.add_argument_group("Firth Penalization")
+    firth_group.add_argument(
+        "--use-firth", action="store_true", default=True,
+        help="Use Firth's penalized logistic regression (default: True).",
+    )
+    firth_group.add_argument(
+        "--no-firth", dest="use_firth", action="store_false",
+        help="Disable Firth's penalized logistic regression.",
+    )
 
     # ── HPC / Parallelism ──
     hpc_group = parser.add_argument_group("HPC / Parallelism")
@@ -174,8 +205,8 @@ Examples:
     # ── Cox Solver ──
     cox_group = parser.add_argument_group("Cox Solver")
     cox_group.add_argument(
-        "--cox-solver", default="custom", choices=["custom", "lifelines"],
-        help="Cox PH solver to use (default: custom).",
+        "--cox-solver", default="lifelines", choices=["custom", "lifelines"],
+        help="Cox PH solver to use (default: lifelines).",
     )
     cox_group.add_argument(
         "--cox-penalizer", type=float, default=0.01,
@@ -193,9 +224,13 @@ Examples:
     # ── Visualization ──
     viz_group = parser.add_argument_group("Visualization")
     viz_group.add_argument(
-        "--plots", nargs="+", default=["manhattan", "forest", "heatmap"],
-        choices=["manhattan", "forest", "heatmap", "comparison", "sensitivity"],
-        help="Plot types to generate (default: manhattan forest heatmap).",
+        "--plots", nargs="+", default=["manhattan", "forest", "heatmap", "qq"],
+        choices=["manhattan", "forest", "heatmap", "comparison", "sensitivity", "qq"],
+        help="Plot types to generate (default: manhattan forest heatmap qq).",
+    )
+    viz_group.add_argument(
+        "--max-forest-signals", type=int, default=15,
+        help="Maximum signals per panel in forest plots (default: 15).",
     )
 
     # ── Miscellaneous ──
@@ -255,11 +290,17 @@ def parse_args(argv: Optional[List[str]] = None) -> AnalysisConfig:
         missingness_threshold=args.missingness_threshold,
         fdr_threshold=args.fdr_threshold,
         meta_min_datasets=args.meta_min_datasets,
+        maf_threshold_allele=args.maf_threshold_allele,
+        maf_threshold_aa=args.maf_threshold_aa,
+        min_imputation_r2=args.min_imputation_r2,
+        use_firth=args.use_firth,
         workers=args.workers,
         memory_limit=args.memory_limit,
         chunk_size=args.chunk_size,
         feature_types=args.feature_types,
         plots=args.plots,
+        max_forest_signals=args.max_forest_signals,
+        split_by_feature_type=args.split_by_feature_type,
         log_level=args.log_level,
         seed=args.seed,
         cox_solver=args.cox_solver,

@@ -15,6 +15,25 @@ from hla_analysis.vcf_parser import detect_dosage_format, parse_vcf_to_dosage_df
 logger = logging.getLogger(__name__)
 
 
+def compute_maf(dosage_col: np.ndarray) -> float:
+    """Compute minor allele frequency from a dosage column.
+
+    Parameters
+    ----------
+    dosage_col : np.ndarray
+        Dosage values for one feature (0-2 scale).
+
+    Returns
+    -------
+    float
+        Minor allele frequency: mean(dosage) / 2.
+    """
+    valid = dosage_col[~np.isnan(dosage_col)]
+    if len(valid) == 0:
+        return 0.0
+    return float(np.mean(valid) / 2.0)
+
+
 class DataLoader:
     """Load, validate, and prepare HLA dosage + covariate data.
 
@@ -30,6 +49,7 @@ class DataLoader:
     EXPECTED_COV_COLS = {
         "IID", "dataset", "age", "sex", "case", "grade",
         "idh", "pq", "treated", "survdays", "vstatus", "exclude",
+        "rad", "chemo",
     }
 
     def __init__(self, config: AnalysisConfig):
@@ -65,7 +85,7 @@ class DataLoader:
         self._validate_covariates(cov, dataset_name)
 
         # Load dosage data — auto-detect CSV vs VCF
-        dosage_df = self._load_dosage(dosage_path, dataset_name)
+        dosage_df, r2_info = self._load_dosage(dosage_path, dataset_name)
         if "sample_id" not in dosage_df.columns:
             raise ValueError(
                 f"Dosage file {dosage_path} must have a 'sample_id' column"
@@ -74,6 +94,21 @@ class DataLoader:
         # Identify HLA feature columns
         feature_cols = [c for c in dosage_df.columns if c != "sample_id"]
         logger.info("Dataset %s: %d features in dosage file", dataset_name, len(feature_cols))
+
+        # ── R² filtering ──
+        if r2_info and self.config.min_imputation_r2 > 0:
+            before_r2 = len(feature_cols)
+            feature_cols = [
+                f for f in feature_cols
+                if r2_info.get(f, 1.0) >= self.config.min_imputation_r2
+            ]
+            n_dropped_r2 = before_r2 - len(feature_cols)
+            if n_dropped_r2 > 0:
+                logger.info(
+                    "Dataset %s: dropped %d features with R² < %.2f (%d remain)",
+                    dataset_name, n_dropped_r2, self.config.min_imputation_r2,
+                    len(feature_cols),
+                )
 
         # Filter feature types
         classified = classify_features(feature_cols)
@@ -87,6 +122,27 @@ class DataLoader:
 
         logger.info("Dataset %s: %d features selected after type filtering",
                      dataset_name, len(selected_features))
+
+        # ── MAF filtering ──
+        before_maf = len(selected_features)
+        maf_passed = []
+        for feat in selected_features:
+            dosage_vals = dosage_df[feat].values
+            maf = compute_maf(dosage_vals)
+            # Apply different thresholds for alleles vs amino acid positions
+            if feat.startswith("AA_"):
+                threshold = self.config.maf_threshold_aa
+            else:
+                threshold = self.config.maf_threshold_allele
+            if maf >= threshold:
+                maf_passed.append(feat)
+        selected_features = maf_passed
+        n_dropped_maf = before_maf - len(selected_features)
+        if n_dropped_maf > 0:
+            logger.info(
+                "Dataset %s: dropped %d features below MAF threshold (%d remain)",
+                dataset_name, n_dropped_maf, len(selected_features),
+            )
 
         # Merge on IID / sample_id
         cov = cov.rename(columns={"IID": "sample_id"}) if "IID" in cov.columns else cov
@@ -115,7 +171,8 @@ class DataLoader:
             merged["grade"] = encode_grade(merged["grade"])
 
         # Ensure numeric types for key columns
-        for col in ["case", "idh", "pq", "treated", "age", "survdays", "vstatus"]:
+        for col in ["case", "idh", "pq", "treated", "age", "survdays", "vstatus",
+                     "rad", "chemo"]:
             if col in merged.columns:
                 merged[col] = pd.to_numeric(merged[col], errors="coerce")
 
@@ -149,7 +206,7 @@ class DataLoader:
         if "case" not in cov.columns:
             logger.warning("Dataset %s: no 'case' column found in covariates", dataset_name)
 
-    def _load_dosage(self, dosage_path: str, dataset_name: str) -> pd.DataFrame:
+    def _load_dosage(self, dosage_path: str, dataset_name: str) -> Tuple[pd.DataFrame, Dict[str, float]]:
         """Load a dosage file, dispatching to CSV or VCF parser.
 
         Parameters
@@ -161,12 +218,15 @@ class DataLoader:
 
         Returns
         -------
-        pd.DataFrame
-            Dosage data with ``sample_id`` column + feature columns.
+        tuple of (pd.DataFrame, dict)
+            Dosage data with ``sample_id`` column + feature columns,
+            and a dict mapping feature names to R² values (empty if CSV).
         """
         fmt = self.config.dosage_format
         if fmt == "auto":
             fmt = detect_dosage_format(dosage_path)
+
+        r2_info: Dict[str, float] = {}
 
         if fmt == "vcf":
             logger.info("Dataset %s: loading VCF dosage from %s", dataset_name, dosage_path)
@@ -177,10 +237,66 @@ class DataLoader:
                 include_snps=self.config.include_snps,
                 normalize_ids=True,
             )
-            return df
+            # Also parse R² from VCF INFO field
+            r2_info = self._parse_vcf_r2(dosage_path, df.columns.tolist())
+            return df, r2_info
         else:
             logger.info("Dataset %s: loading CSV dosage from %s", dataset_name, dosage_path)
-            return pd.read_csv(dosage_path)
+            return pd.read_csv(dosage_path), r2_info
+
+    def _parse_vcf_r2(self, vcf_path: str, feature_names: List[str]) -> Dict[str, float]:
+        """Parse R² values from VCF INFO field for quality filtering.
+
+        Parameters
+        ----------
+        vcf_path : str
+            Path to VCF file.
+        feature_names : list of str
+            Feature names (after normalization) to look for.
+
+        Returns
+        -------
+        dict of str -> float
+            Mapping from feature name to R² value.
+        """
+        import gzip
+
+        r2_info: Dict[str, float] = {}
+        feature_set = set(feature_names) - {"sample_id"}
+
+        opener = gzip.open if vcf_path.endswith(".gz") else open
+        open_kwargs = {"mode": "rt", "encoding": "utf-8"} if vcf_path.endswith(".gz") else {"mode": "r", "encoding": "utf-8"}
+
+        try:
+            with opener(vcf_path, **open_kwargs) as fh:
+                for line in fh:
+                    if line.startswith("#"):
+                        continue
+                    cols = line.rstrip("\n\r").split("\t", 9)
+                    if len(cols) < 8:
+                        continue
+                    variant_id = cols[2]
+                    # Normalize to match our convention
+                    norm_id = variant_id.replace("*", "_")
+                    if norm_id not in feature_set:
+                        continue
+                    # Parse INFO field for R2
+                    info = cols[7]
+                    r2_val = None
+                    for kv in info.split(";"):
+                        if kv.startswith("R2=") or kv.startswith("DR2="):
+                            try:
+                                r2_val = float(kv.split("=", 1)[1])
+                            except (ValueError, IndexError):
+                                pass
+                            break
+                    if r2_val is not None:
+                        r2_info[norm_id] = r2_val
+        except Exception as e:
+            logger.warning("Failed to parse R² from VCF %s: %s", vcf_path, e)
+
+        logger.info("Parsed R² for %d features from VCF", len(r2_info))
+        return r2_info
 
     def load_all_datasets(self) -> List[Dict]:
         """Load all datasets specified in config.
@@ -329,6 +445,10 @@ class DataLoader:
     ) -> Tuple[Optional[np.ndarray], List[str], np.ndarray]:
         """Build the covariate design matrix for a sample subset.
 
+        Automatically drops covariates that are all-NaN or have zero variance
+        in the current subset to prevent model failures (e.g. rad/chemo in TCGA,
+        treated being constant).
+
         Parameters
         ----------
         covariates : pd.DataFrame
@@ -355,6 +475,22 @@ class DataLoader:
         available = [c for c in covariate_names if c in subset.columns]
         if not available:
             logger.warning("No requested covariates available; running without covariates")
+            return None, [], sample_mask
+
+        # ── Drop covariates that are all-NaN in this subset ──
+        kept = []
+        for c in available:
+            if subset[c].isna().all():
+                logger.warning(
+                    "Covariate '%s' is ALL NaN for the current sample subset — "
+                    "auto-dropping from model", c
+                )
+            else:
+                kept.append(c)
+        available = kept
+
+        if not available:
+            logger.warning("All covariates are all-NaN; running without covariates")
             return None, [], sample_mask
 
         if strategy == "reduced":
@@ -391,6 +527,25 @@ class DataLoader:
         final_mask[drop_positions] = False
 
         X_cov = cov_data.loc[complete].values.astype(np.float64)
+
+        # ── Drop zero-variance covariates ──
+        # (e.g., 'treated' being all 1 in TCGA cases)
+        variances = np.var(X_cov, axis=0)
+        zero_var_mask = variances < 1e-10
+        if zero_var_mask.any():
+            dropped_names = [available[i] for i in range(len(available)) if zero_var_mask[i]]
+            for dname in dropped_names:
+                logger.warning(
+                    "Covariate '%s' has zero variance in current subset — "
+                    "auto-dropping from model", dname
+                )
+            keep_cols = ~zero_var_mask
+            X_cov = X_cov[:, keep_cols]
+            available = [available[i] for i in range(len(available)) if keep_cols[i]]
+
+        if X_cov.shape[1] == 0:
+            logger.warning("All covariates dropped (zero variance); running without covariates")
+            return None, [], final_mask
 
         return X_cov, available, final_mask
 

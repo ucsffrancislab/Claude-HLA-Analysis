@@ -109,12 +109,8 @@ def fast_cox_single(
 
             # Newton-Raphson step with step-halving
             try:
-                step = np.linalg.solve(hess, grad)  # hess is negative semi-definite
-                # hess * step = grad => step = hess^{-1} * grad
-                # Since hess is the negative Hessian of ll, we want beta -= hess^{-1} * grad
-                # But we defined hess as the actual negative Hessian, so:
+                step = np.linalg.solve(hess, grad)
             except np.linalg.LinAlgError:
-                # Singular Hessian — add small ridge
                 try:
                     step = np.linalg.solve(
                         hess - 1e-6 * np.eye(p), grad
@@ -192,8 +188,6 @@ def fast_cox_single(
 
         # Concordance
         try:
-            risk_scores = X[sort_idx] @ beta  # unsorted risk scores would need re-indexing
-            # Use original order
             risk_scores_orig = X @ beta
             conc = compute_concordance(time, event, risk_scores_orig)
         except Exception:
@@ -212,6 +206,39 @@ def fast_cox_single(
         }
 
 
+def _drop_constant_columns(X: np.ndarray, col_names: List[str]) -> Tuple[np.ndarray, List[str]]:
+    """Drop columns with zero variance from the design matrix.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Design matrix.
+    col_names : list of str
+        Column names matching X's columns.
+
+    Returns
+    -------
+    X_filtered : np.ndarray
+        Design matrix without constant columns.
+    kept_names : list of str
+        Column names that were kept.
+    """
+    if X.shape[1] == 0:
+        return X, col_names
+
+    variances = np.var(X, axis=0)
+    keep_mask = variances > 1e-10
+
+    if not keep_mask.all():
+        dropped = [col_names[i] for i in range(len(col_names)) if not keep_mask[i]]
+        for d in dropped:
+            logger.warning(
+                "Survival analysis: dropping constant covariate '%s' from Cox model", d
+            )
+
+    return X[:, keep_mask], [col_names[i] for i in range(len(col_names)) if keep_mask[i]]
+
+
 def _fit_survival_single(
     dosage_col: np.ndarray,
     time: np.ndarray,
@@ -219,10 +246,11 @@ def _fit_survival_single(
     X_cov: Optional[np.ndarray],
     feature_name: str,
     min_events: int,
-    use_custom: bool = True,
+    use_custom: bool = False,
     max_iter: int = 50,
     tol: float = 1e-9,
     penalizer: float = 0.01,
+    use_firth: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """Fit a single Cox PH model.
 
@@ -248,6 +276,8 @@ def _fit_survival_single(
         Convergence tolerance.
     penalizer : float
         Penalizer for lifelines.
+    use_firth : bool
+        If True, apply penalization in lifelines CoxPHFitter.
 
     Returns
     -------
@@ -298,13 +328,16 @@ def _fit_survival_single(
         try:
             from lifelines import CoxPHFitter
 
-            df = pd.DataFrame(X, columns=[feature_name] + [f"cov_{i}" for i in range(X.shape[1] - 1)])
+            col_names = [feature_name] + [f"cov_{i}" for i in range(X.shape[1] - 1)]
+            df = pd.DataFrame(X, columns=col_names)
             df["T"] = time
             df["E"] = event
 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                cph = CoxPHFitter(penalizer=penalizer)
+                # Use penalizer when use_firth is True (penalized Cox)
+                pen = penalizer if use_firth else 0.0
+                cph = CoxPHFitter(penalizer=pen)
                 cph.fit(df, duration_col="T", event_col="E")
 
             summary = cph.summary
@@ -362,13 +395,15 @@ def _process_feature_chunk_survival(
     max_iter: int,
     tol: float,
     penalizer: float,
+    use_firth: bool = True,
 ) -> List[Dict[str, Any]]:
     """Process a chunk of features for survival analysis."""
     results = []
     for idx in chunk_indices:
         res = _fit_survival_single(
             dosage_matrix[:, idx], time, event, X_cov,
-            feature_names[idx], min_events, use_custom, max_iter, tol, penalizer,
+            feature_names[idx], min_events, use_custom, max_iter, tol,
+            penalizer, use_firth,
         )
         if res is not None:
             results.append(res)
@@ -438,6 +473,15 @@ class SurvivalAnalyzer:
             logger.warning("Fewer than 2 events; skipping stratum %s", stratum)
             return pd.DataFrame()
 
+        # Drop constant columns from covariate matrix
+        if X_cov is not None and X_cov.shape[1] > 0:
+            cov_col_names = covariate_names if covariate_names else [f"cov_{i}" for i in range(X_cov.shape[1])]
+            X_cov, cov_col_names = _drop_constant_columns(X_cov, cov_col_names)
+            covariate_names = cov_col_names
+            if X_cov.shape[1] == 0:
+                X_cov = None
+                logger.warning("All covariates constant; running survival without covariates")
+
         # Create chunks
         chunk_size = self.config.chunk_size
         chunks = [
@@ -463,6 +507,7 @@ class SurvivalAnalyzer:
                 max_iter=self.config.cox_max_iter,
                 tol=self.config.cox_tol,
                 penalizer=self.config.cox_penalizer,
+                use_firth=self.config.use_firth,
             )
             try:
                 with Pool(processes=workers) as pool:
@@ -478,6 +523,7 @@ class SurvivalAnalyzer:
                             feature_names, self.config.min_events,
                             use_custom, self.config.cox_max_iter,
                             self.config.cox_tol, self.config.cox_penalizer,
+                            self.config.use_firth,
                         )
                     )
         else:
@@ -488,6 +534,7 @@ class SurvivalAnalyzer:
                         feature_names, self.config.min_events,
                         use_custom, self.config.cox_max_iter,
                         self.config.cox_tol, self.config.cox_penalizer,
+                        self.config.use_firth,
                     )
                 )
 
@@ -531,4 +578,5 @@ class SurvivalAnalyzer:
             max_iter=self.config.cox_max_iter,
             tol=self.config.cox_tol,
             penalizer=self.config.cox_penalizer,
+            use_firth=self.config.use_firth,
         )

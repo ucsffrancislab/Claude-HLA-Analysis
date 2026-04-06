@@ -13,12 +13,12 @@ from importlib.metadata import version as _version
 try:
     __version__ = _version("hla-analysis")
 except Exception:
-    __version__ = "unknown"  # not installed as a package
+    __version__ = "1.3.0"
 __author__ = "HLA Analysis Team"
 __license__ = "MIT"
 
 from hla_analysis.config import AnalysisConfig, SensitivityStrategy
-from hla_analysis.data_loader import DataLoader
+from hla_analysis.data_loader import DataLoader, compute_maf
 from hla_analysis.risk_analysis import RiskAnalyzer
 from hla_analysis.survival_analysis import SurvivalAnalyzer
 from hla_analysis.meta_analysis import MetaAnalyzer
@@ -30,6 +30,7 @@ __all__ = [
     "AnalysisConfig",
     "SensitivityStrategy",
     "DataLoader",
+    "compute_maf",
     "RiskAnalyzer",
     "SurvivalAnalyzer",
     "MetaAnalyzer",

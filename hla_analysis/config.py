@@ -35,7 +35,7 @@ STRATA_DEFINITIONS = {
 
 # Default covariates
 DEFAULT_RISK_COVARIATES = ["age", "sex", "PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8"]
-DEFAULT_SURVIVAL_COVARIATES = ["age", "sex", "grade", "treated"]
+DEFAULT_SURVIVAL_COVARIATES = ["age", "sex", "grade", "rad", "chemo"]
 
 # Feature type classification
 FEATURE_TYPES = {
@@ -130,6 +130,18 @@ class AnalysisConfig:
         Maximum iterations for custom Cox solver.
     cox_tol : float
         Convergence tolerance for custom Cox solver.
+    maf_threshold_allele : float
+        MAF threshold for classical HLA alleles (default 1%).
+    maf_threshold_aa : float
+        MAF threshold for amino acid positions (default 0.5%).
+    min_imputation_r2 : float
+        Minimum imputation R² for feature inclusion (default 0.3).
+    use_firth : bool
+        Use Firth's penalized logistic regression for risk analysis.
+    max_forest_signals : int
+        Maximum number of signals to display per panel in forest plots.
+    split_by_feature_type : bool
+        When True, run separate analyses for alleles and amino acid positions.
     """
 
     # Input/output
@@ -165,6 +177,14 @@ class AnalysisConfig:
     fdr_threshold: float = 0.05
     meta_min_datasets: int = 2
 
+    # MAF and imputation quality thresholds
+    maf_threshold_allele: float = 0.01    # 1% for classical alleles
+    maf_threshold_aa: float = 0.005       # 0.5% for amino acid positions
+    min_imputation_r2: float = 0.3        # R² quality filter
+
+    # Firth's penalized regression
+    use_firth: bool = True
+
     # HPC / parallelism
     workers: int = -1  # -1 = auto-detect
     memory_limit: float = -1.0  # -1 = auto-detect
@@ -176,14 +196,18 @@ class AnalysisConfig:
     )
 
     # Visualization
-    plots: List[str] = field(default_factory=lambda: ["manhattan", "forest", "heatmap"])
+    plots: List[str] = field(default_factory=lambda: ["manhattan", "forest", "heatmap", "qq"])
+    max_forest_signals: int = 15
+
+    # Feature type splitting
+    split_by_feature_type: bool = True
 
     # Logging & reproducibility
     log_level: str = "INFO"
     seed: int = 42
 
     # Cox solver settings
-    cox_solver: str = "custom"
+    cox_solver: str = "lifelines"
     cox_penalizer: float = 0.01
     cox_max_iter: int = 50
     cox_tol: float = 1e-9
@@ -236,10 +260,11 @@ class AnalysisConfig:
                 raise ValueError(
                     f"Unknown feature type: {ft!r}. Available: {list(FEATURE_TYPES.keys())}"
                 )
+        valid_plots = {"manhattan", "forest", "heatmap", "comparison", "sensitivity", "qq"}
         for p in self.plots:
-            if p not in ("manhattan", "forest", "heatmap", "comparison", "sensitivity"):
+            if p not in valid_plots:
                 raise ValueError(
-                    f"Unknown plot type: {p!r}. Available: manhattan, forest, heatmap, comparison, sensitivity"
+                    f"Unknown plot type: {p!r}. Available: {sorted(valid_plots)}"
                 )
         if self.min_carriers < 1:
             raise ValueError("min_carriers must be >= 1")

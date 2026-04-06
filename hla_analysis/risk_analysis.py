@@ -1,5 +1,6 @@
 """
 Logistic regression risk analysis for HLA allele associations.
+Supports Firth's penalized logistic regression to handle separation.
 """
 
 import logging
@@ -18,12 +19,120 @@ from hla_analysis.utils import benjamini_hochberg, safe_exp, results_to_datafram
 logger = logging.getLogger(__name__)
 
 
+def _fit_firth_logistic(
+    y: np.ndarray,
+    X: np.ndarray,
+    max_iter: int = 100,
+    tol: float = 1e-6,
+) -> Optional[Dict[str, Any]]:
+    """Fit Firth's penalized logistic regression.
+
+    Implements Firth's bias-reduced logistic regression which adds
+    Jeffreys invariant prior (0.5 * hat-diagonal penalty) to prevent
+    infinite coefficients from complete/quasi-complete separation.
+
+    Parameters
+    ----------
+    y : np.ndarray
+        Binary outcome (0/1).
+    X : np.ndarray
+        Design matrix including intercept.
+    max_iter : int
+        Maximum iterations.
+    tol : float
+        Convergence tolerance on log-likelihood change.
+
+    Returns
+    -------
+    dict or None
+        beta, se arrays and convergence info, or None if failed.
+    """
+    n, p = X.shape
+    beta = np.zeros(p, dtype=np.float64)
+
+    prev_ll = -np.inf
+    converged = False
+
+    for iteration in range(max_iter):
+        # Compute probabilities
+        eta = X @ beta
+        eta = np.clip(eta, -500, 500)
+        mu = 1.0 / (1.0 + np.exp(-eta))
+        mu = np.clip(mu, 1e-10, 1.0 - 1e-10)
+
+        # Weight matrix W = diag(mu * (1 - mu))
+        W = mu * (1.0 - mu)
+
+        # Information matrix: X^T W X
+        XtW = X.T * W[np.newaxis, :]
+        info_mat = XtW @ X
+
+        # Hat matrix diagonal: h_ii = W_ii * X_i (X^T W X)^{-1} X_i^T
+        try:
+            info_inv = np.linalg.inv(info_mat)
+        except np.linalg.LinAlgError:
+            # Add small ridge for numerical stability
+            try:
+                info_inv = np.linalg.inv(info_mat + 1e-6 * np.eye(p))
+            except np.linalg.LinAlgError:
+                return None
+
+        # Compute hat diagonal efficiently
+        # H = W^{1/2} X (X^T W X)^{-1} X^T W^{1/2}
+        # h_ii = W_i * X_i @ info_inv @ X_i
+        hat_diag = np.einsum('ij,jk,ik->i', X * W[:, np.newaxis], info_inv, X)
+
+        # Firth-penalized score: add 0.5 * h_i * (1 - 2*mu_i) to score
+        score = X.T @ (y - mu) + 0.5 * X.T @ (hat_diag * (1.0 - 2.0 * mu))
+
+        # Penalized log-likelihood
+        ll = np.sum(y * np.log(mu) + (1.0 - y) * np.log(1.0 - mu)) + 0.5 * np.log(np.linalg.det(info_mat) + 1e-300)
+
+        if np.isnan(ll) or np.isinf(ll):
+            break
+
+        if abs(ll - prev_ll) < tol and iteration > 0:
+            converged = True
+            break
+        prev_ll = ll
+
+        # Newton step
+        try:
+            step = info_inv @ score
+        except Exception:
+            break
+
+        beta = beta + step
+
+    # Final SE computation
+    eta = X @ beta
+    eta = np.clip(eta, -500, 500)
+    mu = 1.0 / (1.0 + np.exp(-eta))
+    mu = np.clip(mu, 1e-10, 1.0 - 1e-10)
+    W = mu * (1.0 - mu)
+    XtW = X.T * W[np.newaxis, :]
+    info_mat = XtW @ X
+
+    try:
+        var_cov = np.linalg.inv(info_mat)
+        se = np.sqrt(np.maximum(np.diag(var_cov), 0.0))
+    except np.linalg.LinAlgError:
+        se = np.full(p, np.nan)
+
+    return {
+        "beta": beta,
+        "se": se,
+        "converged": converged,
+    }
+
+
 def _fit_logistic_single(
     dosage_col: np.ndarray,
     y: np.ndarray,
     X_cov: Optional[np.ndarray],
     feature_name: str,
     min_carriers: int,
+    use_firth: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Fit a single logistic regression model.
 
@@ -39,6 +148,8 @@ def _fit_logistic_single(
         Name of the feature.
     min_carriers : int
         Minimum carriers in each group.
+    use_firth : bool
+        If True, use Firth's penalized logistic regression when needed.
 
     Returns
     -------
@@ -74,9 +185,38 @@ def _fit_logistic_single(
             result = model.fit(disp=0, maxiter=100, method="newton")
 
         if not result.mle_retvals.get("converged", True):
+            # Try Firth if standard failed to converge
+            if use_firth:
+                firth_res = _fit_firth_logistic(y, X)
+                if firth_res is not None and firth_res["converged"]:
+                    beta = firth_res["beta"][1]
+                    se = firth_res["se"][1]
+                    or_val = safe_exp(beta)
+                    ci_lower = safe_exp(beta - 1.96 * se)
+                    ci_upper = safe_exp(beta + 1.96 * se)
+                    z = beta / se if se > 0 else 0.0
+                    pvalue = float(2 * sp_stats.norm.sf(abs(z)))
+
+                    return {
+                        "feature": feature_name,
+                        "converged": True,
+                        "method": "firth",
+                        "beta": float(beta),
+                        "se": float(se),
+                        "or_val": float(or_val),
+                        "ci_lower": float(ci_lower),
+                        "ci_upper": float(ci_upper),
+                        "pvalue": float(pvalue),
+                        "n_cases": int(cases_mask.sum()),
+                        "n_controls": int((~cases_mask).sum()),
+                        "carriers_cases": int(carriers_cases),
+                        "carriers_controls": int(carriers_controls),
+                    }
+
             return {
                 "feature": feature_name,
                 "converged": False,
+                "method": "standard",
                 "beta": np.nan,
                 "se": np.nan,
                 "or_val": np.nan,
@@ -97,9 +237,43 @@ def _fit_logistic_single(
         ci_upper = safe_exp(beta + 1.96 * se)
         pvalue = result.pvalues[1]
 
+        # Check for quasi-complete separation indicators
+        # If beta > 5 or SE > 10, refit with Firth
+        if use_firth and (abs(beta) > 5 or se > 10):
+            logger.debug(
+                "Feature %s shows possible separation (beta=%.2f, SE=%.2f) — "
+                "refitting with Firth's method",
+                feature_name, beta, se,
+            )
+            firth_res = _fit_firth_logistic(y, X)
+            if firth_res is not None and firth_res["converged"]:
+                beta = firth_res["beta"][1]
+                se = firth_res["se"][1]
+                or_val = safe_exp(beta)
+                ci_lower = safe_exp(beta - 1.96 * se)
+                ci_upper = safe_exp(beta + 1.96 * se)
+                z = beta / se if se > 0 else 0.0
+                pvalue = float(2 * sp_stats.norm.sf(abs(z)))
+                return {
+                    "feature": feature_name,
+                    "converged": True,
+                    "method": "firth",
+                    "beta": float(beta),
+                    "se": float(se),
+                    "or_val": float(or_val),
+                    "ci_lower": float(ci_lower),
+                    "ci_upper": float(ci_upper),
+                    "pvalue": float(pvalue),
+                    "n_cases": int(cases_mask.sum()),
+                    "n_controls": int((~cases_mask).sum()),
+                    "carriers_cases": int(carriers_cases),
+                    "carriers_controls": int(carriers_controls),
+                }
+
         return {
             "feature": feature_name,
             "converged": True,
+            "method": "standard",
             "beta": float(beta),
             "se": float(se),
             "or_val": float(or_val),
@@ -114,9 +288,41 @@ def _fit_logistic_single(
 
     except Exception as e:
         logger.debug("Logistic regression failed for %s: %s", feature_name, e)
+
+        # Attempt Firth as fallback
+        if use_firth:
+            try:
+                firth_res = _fit_firth_logistic(y, X)
+                if firth_res is not None and firth_res["converged"]:
+                    beta = firth_res["beta"][1]
+                    se = firth_res["se"][1]
+                    or_val = safe_exp(beta)
+                    ci_lower = safe_exp(beta - 1.96 * se)
+                    ci_upper = safe_exp(beta + 1.96 * se)
+                    z = beta / se if se > 0 else 0.0
+                    pvalue = float(2 * sp_stats.norm.sf(abs(z)))
+                    return {
+                        "feature": feature_name,
+                        "converged": True,
+                        "method": "firth",
+                        "beta": float(beta),
+                        "se": float(se),
+                        "or_val": float(or_val),
+                        "ci_lower": float(ci_lower),
+                        "ci_upper": float(ci_upper),
+                        "pvalue": float(pvalue),
+                        "n_cases": int(cases_mask.sum()),
+                        "n_controls": int((~cases_mask).sum()),
+                        "carriers_cases": int(carriers_cases),
+                        "carriers_controls": int(carriers_controls),
+                    }
+            except Exception:
+                pass
+
         return {
             "feature": feature_name,
             "converged": False,
+            "method": "standard",
             "beta": np.nan,
             "se": np.nan,
             "or_val": np.nan,
@@ -137,6 +343,7 @@ def _process_feature_chunk_risk(
     X_cov: Optional[np.ndarray],
     feature_names: List[str],
     min_carriers: int,
+    use_firth: bool = False,
 ) -> List[Dict[str, Any]]:
     """Process a chunk of features for risk analysis.
 
@@ -154,6 +361,8 @@ def _process_feature_chunk_risk(
         Feature names.
     min_carriers : int
         Minimum carrier threshold.
+    use_firth : bool
+        Whether to use Firth's penalized regression.
 
     Returns
     -------
@@ -163,7 +372,8 @@ def _process_feature_chunk_risk(
     results = []
     for idx in chunk_indices:
         res = _fit_logistic_single(
-            dosage_matrix[:, idx], y, X_cov, feature_names[idx], min_carriers
+            dosage_matrix[:, idx], y, X_cov, feature_names[idx], min_carriers,
+            use_firth=use_firth,
         )
         if res is not None:
             results.append(res)
@@ -246,6 +456,7 @@ class RiskAnalyzer:
                 X_cov=X_cov,
                 feature_names=feature_names,
                 min_carriers=self.config.min_carriers,
+                use_firth=self.config.use_firth,
             )
             try:
                 with Pool(processes=workers) as pool:
@@ -258,7 +469,7 @@ class RiskAnalyzer:
                     all_results.extend(
                         _process_feature_chunk_risk(
                             chunk, dosage_matrix, y, X_cov, feature_names,
-                            self.config.min_carriers,
+                            self.config.min_carriers, self.config.use_firth,
                         )
                     )
         else:
@@ -266,7 +477,7 @@ class RiskAnalyzer:
                 all_results.extend(
                     _process_feature_chunk_risk(
                         chunk, dosage_matrix, y, X_cov, feature_names,
-                        self.config.min_carriers,
+                        self.config.min_carriers, self.config.use_firth,
                     )
                 )
 
@@ -287,10 +498,12 @@ class RiskAnalyzer:
         df["fdr"] = benjamini_hochberg(valid_p, self.config.fdr_threshold)
 
         n_sig = (df["fdr"] < self.config.fdr_threshold).sum()
+        n_firth = (df["method"] == "firth").sum() if "method" in df.columns else 0
         logger.info(
             "Risk results: dataset=%s, stratum=%s, strategy=%s: "
-            "%d features tested, %d significant (FDR < %.2f)",
-            dataset_name, stratum, strategy, len(df), n_sig, self.config.fdr_threshold,
+            "%d features tested, %d significant (FDR < %.2f), %d used Firth",
+            dataset_name, stratum, strategy, len(df), n_sig,
+            self.config.fdr_threshold, n_firth,
         )
 
         return df
@@ -320,5 +533,6 @@ class RiskAnalyzer:
         dict or None
         """
         return _fit_logistic_single(
-            dosage_col, y, X_cov, feature_name, self.config.min_carriers
+            dosage_col, y, X_cov, feature_name, self.config.min_carriers,
+            use_firth=self.config.use_firth,
         )

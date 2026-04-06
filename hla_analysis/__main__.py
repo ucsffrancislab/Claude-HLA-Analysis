@@ -22,7 +22,7 @@ from hla_analysis.survival_analysis import SurvivalAnalyzer
 from hla_analysis.meta_analysis import MetaAnalyzer, create_summary_tables
 from hla_analysis.sensitivity import create_sensitivity_comparison
 from hla_analysis.visualization import Visualizer
-from hla_analysis.utils import setup_logging
+from hla_analysis.utils import setup_logging, classify_feature
 
 logger = logging.getLogger(__name__)
 
@@ -71,43 +71,57 @@ def _resolve_strategies(
         return result
 
 
-# ── pipeline ───────────────────────────────────────────────────────────────
+def _filter_features_by_type(
+    features: List[str],
+    feature_type: str,
+) -> List[str]:
+    """Filter features to only those matching a specific feature type.
 
-def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
-    """Run the full HLA analysis pipeline.
+    Parameters
+    ----------
+    features : list of str
+        All feature names.
+    feature_type : str
+        'alleles' — keep HLA_ features that contain ':' (4-digit classical alleles)
+        'amino_acids' — keep AA_ features
+
+    Returns
+    -------
+    list of str
+        Filtered feature names.
+    """
+    if feature_type == "alleles":
+        return [f for f in features if f.startswith("HLA_") and ":" in f]
+    elif feature_type == "amino_acids":
+        return [f for f in features if f.startswith("AA_")]
+    else:
+        return features
+
+
+def _run_single_analysis(
+    config: AnalysisConfig,
+    datasets: List[Dict],
+    feature_type_label: str = "all",
+) -> Dict[str, pd.DataFrame]:
+    """Run the analysis pipeline for a specific feature type subset.
 
     Parameters
     ----------
     config : AnalysisConfig
         Pipeline configuration.
+    datasets : list of dict
+        Loaded datasets.
+    feature_type_label : str
+        'alleles', 'amino_acids', or 'all'.
 
     Returns
     -------
     dict
-        Keys: 'risk_results', 'survival_results', 'risk_meta', 'survival_meta',
-              'summary_tables', 'sensitivity_risk', 'sensitivity_survival'.
+        Keys: risk_results, survival_results, risk_meta, survival_meta, etc.
     """
-    t_start = time.time()
     os.makedirs(config.output_dir, exist_ok=True)
-    np.random.seed(config.seed)
 
-    logger.info("=" * 60)
-    logger.info("HLA Analysis Pipeline v1.2.1")
-    logger.info("=" * 60)
-    logger.info("Workers: %d, Memory limit: %.1f GB, Chunk size: %d",
-                config.workers, config.memory_limit, config.chunk_size)
-    logger.info("Analyses: %s", config.analyses)
-    logger.info("Strata: %s", config.strata)
-    if config.sensitivity_analysis:
-        logger.info("Sensitivity analysis: ENABLED (overrides covariate strategies)")
-    else:
-        logger.info("Covariate strategies: %s", config.covariate_strategies)
-    logger.info("Datasets: %s", config.dataset_names)
-
-    # ── Load data ──
     loader = DataLoader(config)
-    datasets = loader.load_all_datasets()
-    logger.info("Loaded %d datasets", len(datasets))
 
     # ── Initialize analyzers ──
     risk_analyzer = RiskAnalyzer(config) if "risk" in config.analyses else None
@@ -124,12 +138,27 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
         dosage = ds["dosage"]
         features = ds["feature_names"]
 
+        # Filter features by type
+        if feature_type_label != "all":
+            selected_features = _filter_features_by_type(features, feature_type_label)
+            if not selected_features:
+                logger.warning(
+                    "Dataset %s: no %s features found, skipping",
+                    ds_name, feature_type_label,
+                )
+                continue
+            # Get column indices for the selected features
+            feat_indices = [features.index(f) for f in selected_features]
+            dosage_sub_type = dosage[:, feat_indices]
+            features_sub = selected_features
+        else:
+            dosage_sub_type = dosage
+            features_sub = features
+
         # Memory estimate
-        mem_est = config.estimate_memory_per_dataset(dosage.shape[0], dosage.shape[1])
-        logger.info("Dataset %s: estimated %.2f GB memory", ds_name, mem_est)
-        if mem_est > config.memory_limit * 0.8:
-            logger.warning("Dataset %s may exceed memory limit (%.1f GB > %.1f GB * 0.8)",
-                           ds_name, mem_est, config.memory_limit)
+        mem_est = config.estimate_memory_per_dataset(dosage_sub_type.shape[0], dosage_sub_type.shape[1])
+        logger.info("Dataset %s [%s]: estimated %.2f GB memory, %d features",
+                     ds_name, feature_type_label, mem_est, len(features_sub))
 
         for stratum in config.strata:
 
@@ -152,10 +181,10 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
                                 cov, combined_idx, strategy_covs, "full",
                             )
                             y = cov.loc[final_mask, "case"].values.astype(np.float64)
-                            dosage_sub = dosage[final_mask]
+                            dosage_sub = dosage_sub_type[final_mask]
 
                             risk_df = risk_analyzer.analyze_stratum(
-                                dosage_sub, y, X_cov, features,
+                                dosage_sub, y, X_cov, features_sub,
                                 ds_name, stratum, strategy_name, used_covs,
                             )
                             if not risk_df.empty:
@@ -184,7 +213,7 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
 
                             time_vals = cov.loc[final_mask_s, "survdays"].values.astype(np.float64)
                             event_vals = cov.loc[final_mask_s, "vstatus"].values.astype(np.float64)
-                            dosage_sub_s = dosage[final_mask_s]
+                            dosage_sub_s = dosage_sub_type[final_mask_s]
 
                             n_events = int(event_vals.sum())
                             if n_events < 2:
@@ -194,7 +223,7 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
 
                             surv_df = surv_analyzer.analyze_stratum(
                                 dosage_sub_s, time_vals, event_vals,
-                                X_cov_s, features, ds_name, stratum,
+                                X_cov_s, features_sub, ds_name, stratum,
                                 strategy_name, used_covs_s,
                             )
                             if not surv_df.empty:
@@ -271,6 +300,7 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
         viz = Visualizer(
             output_dir=os.path.join(config.output_dir, "plots"),
             fdr_threshold=config.fdr_threshold,
+            max_forest_signals=config.max_forest_signals,
         )
 
         # Determine unique strategies present in results
@@ -285,6 +315,9 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
                 if "forest" in config.plots:
                     if not risk_meta.empty and not risk_combined.empty:
                         viz.forest_plot(risk_meta, risk_combined, "risk", stratum, strategy)
+                if "qq" in config.plots:
+                    if not risk_meta.empty:
+                        viz.qq_plot(risk_meta, "risk", stratum, strategy)
 
             for strategy in (surv_strategies or ["full"]):
                 if "manhattan" in config.plots:
@@ -293,6 +326,9 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
                 if "forest" in config.plots:
                     if not surv_meta.empty and not surv_combined.empty:
                         viz.forest_plot(surv_meta, surv_combined, "survival", stratum, strategy)
+                if "qq" in config.plots:
+                    if not surv_meta.empty:
+                        viz.qq_plot(surv_meta, "survival", stratum, strategy)
 
             if "heatmap" in config.plots:
                 if not risk_meta.empty:
@@ -312,11 +348,6 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
             if not sens_surv.empty:
                 viz.sensitivity_plot(sens_surv, "survival")
 
-    elapsed = time.time() - t_start
-    logger.info("=" * 60)
-    logger.info("Pipeline complete in %.1f seconds", elapsed)
-    logger.info("=" * 60)
-
     return {
         "risk_results": risk_combined,
         "survival_results": surv_combined,
@@ -326,6 +357,216 @@ def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
         "sensitivity_risk": sens_risk,
         "sensitivity_survival": sens_surv,
     }
+
+
+def _create_combined_summary(
+    allele_results: Dict[str, pd.DataFrame],
+    aa_results: Dict[str, pd.DataFrame],
+    output_dir: str,
+    fdr_threshold: float = 0.05,
+) -> None:
+    """Create a combined summary comparing allele and amino acid results.
+
+    Parameters
+    ----------
+    allele_results : dict
+        Results from allele analysis.
+    aa_results : dict
+        Results from amino acid analysis.
+    output_dir : str
+        Output directory for combined results.
+    fdr_threshold : float
+        FDR threshold for significance.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    rows = []
+    for analysis_type in ["risk", "survival"]:
+        meta_key = f"{analysis_type}_meta"
+        results_key = f"{analysis_type}_results"
+
+        for label, res in [("alleles", allele_results), ("amino_acids", aa_results)]:
+            meta_df = res.get(meta_key, pd.DataFrame())
+            per_ds_df = res.get(results_key, pd.DataFrame())
+
+            if meta_df.empty:
+                continue
+
+            for stratum in meta_df["stratum"].unique() if "stratum" in meta_df.columns else ["overall"]:
+                stratum_df = meta_df[meta_df["stratum"] == stratum] if "stratum" in meta_df.columns else meta_df
+
+                n_tested = len(stratum_df)
+                n_sig_fe = (stratum_df["fe_fdr"] < fdr_threshold).sum() if "fe_fdr" in stratum_df.columns else 0
+                n_sig_re = (stratum_df["re_fdr"] < fdr_threshold).sum() if "re_fdr" in stratum_df.columns else 0
+                min_p = stratum_df["fe_pvalue"].min() if "fe_pvalue" in stratum_df.columns and not stratum_df["fe_pvalue"].isna().all() else np.nan
+
+                rows.append({
+                    "feature_type": label,
+                    "analysis_type": analysis_type,
+                    "stratum": stratum,
+                    "n_features_tested": n_tested,
+                    "n_FE_significant": int(n_sig_fe),
+                    "n_RE_significant": int(n_sig_re),
+                    "min_FE_pvalue": min_p,
+                })
+
+    if rows:
+        comparison_df = pd.DataFrame(rows)
+        path = os.path.join(output_dir, "feature_type_comparison.csv")
+        comparison_df.to_csv(path, index=False)
+        logger.info("Saved feature type comparison: %s (%d rows)", path, len(comparison_df))
+
+    # Top signals comparison
+    top_signals = []
+    for label, res in [("alleles", allele_results), ("amino_acids", aa_results)]:
+        for analysis_type in ["risk", "survival"]:
+            meta_key = f"{analysis_type}_meta"
+            meta_df = res.get(meta_key, pd.DataFrame())
+            if meta_df.empty or "fe_pvalue" not in meta_df.columns:
+                continue
+            top = meta_df.nsmallest(10, "fe_pvalue")[
+                ["feature", "stratum", "strategy", "fe_pvalue", "fe_beta", "fe_se"]
+            ].copy()
+            top["feature_type"] = label
+            top["analysis_type"] = analysis_type
+            top_signals.append(top)
+
+    if top_signals:
+        top_df = pd.concat(top_signals, ignore_index=True)
+        path = os.path.join(output_dir, "top_signals_comparison.csv")
+        top_df.to_csv(path, index=False)
+        logger.info("Saved top signals comparison: %s (%d rows)", path, len(top_df))
+
+
+# ── pipeline ───────────────────────────────────────────────────────────────
+
+def run_pipeline(config: AnalysisConfig) -> Dict[str, pd.DataFrame]:
+    """Run the full HLA analysis pipeline.
+
+    Parameters
+    ----------
+    config : AnalysisConfig
+        Pipeline configuration.
+
+    Returns
+    -------
+    dict
+        Keys: 'risk_results', 'survival_results', 'risk_meta', 'survival_meta',
+              'summary_tables', 'sensitivity_risk', 'sensitivity_survival'.
+    """
+    t_start = time.time()
+    os.makedirs(config.output_dir, exist_ok=True)
+    np.random.seed(config.seed)
+
+    logger.info("=" * 60)
+    logger.info("HLA Analysis Pipeline v1.3.0")
+    logger.info("=" * 60)
+    logger.info("Workers: %d, Memory limit: %.1f GB, Chunk size: %d",
+                config.workers, config.memory_limit, config.chunk_size)
+    logger.info("Analyses: %s", config.analyses)
+    logger.info("Strata: %s", config.strata)
+    logger.info("MAF thresholds: allele=%.3f, AA=%.4f", config.maf_threshold_allele, config.maf_threshold_aa)
+    logger.info("Min imputation R²: %.2f", config.min_imputation_r2)
+    logger.info("Firth penalization: %s", config.use_firth)
+    logger.info("Cox solver: %s (penalizer=%.3f)", config.cox_solver, config.cox_penalizer)
+    if config.sensitivity_analysis:
+        logger.info("Sensitivity analysis: ENABLED (overrides covariate strategies)")
+    else:
+        logger.info("Covariate strategies: %s", config.covariate_strategies)
+    logger.info("Datasets: %s", config.dataset_names)
+    logger.info("Split by feature type: %s", config.split_by_feature_type)
+
+    # ── Load data ──
+    loader = DataLoader(config)
+    datasets = loader.load_all_datasets()
+    logger.info("Loaded %d datasets", len(datasets))
+
+    if config.split_by_feature_type:
+        # ── Run separate analyses for alleles and amino acids ──
+        logger.info("=" * 60)
+        logger.info("Running ALLELE analysis")
+        logger.info("=" * 60)
+
+        allele_config = AnalysisConfig(
+            **{k: v for k, v in config.__dict__.items()
+               if k not in ("output_dir",)}
+        )
+        # We don't re-validate since we're just changing output_dir
+        object.__setattr__(allele_config, "output_dir",
+                           os.path.join(config.output_dir, "alleles"))
+        allele_results = _run_single_analysis(allele_config, datasets, "alleles")
+
+        logger.info("=" * 60)
+        logger.info("Running AMINO ACID analysis")
+        logger.info("=" * 60)
+
+        aa_config = AnalysisConfig(
+            **{k: v for k, v in config.__dict__.items()
+               if k not in ("output_dir",)}
+        )
+        object.__setattr__(aa_config, "output_dir",
+                           os.path.join(config.output_dir, "amino_acids"))
+        aa_results = _run_single_analysis(aa_config, datasets, "amino_acids")
+
+        # ── Create combined summary ──
+        combined_dir = os.path.join(config.output_dir, "combined")
+        _create_combined_summary(
+            allele_results, aa_results, combined_dir, config.fdr_threshold
+        )
+
+        elapsed = time.time() - t_start
+        logger.info("=" * 60)
+        logger.info("Pipeline complete in %.1f seconds", elapsed)
+        logger.info("=" * 60)
+
+        # Return merged results
+        return {
+            "risk_results": pd.concat(
+                [allele_results.get("risk_results", pd.DataFrame()),
+                 aa_results.get("risk_results", pd.DataFrame())],
+                ignore_index=True,
+            ),
+            "survival_results": pd.concat(
+                [allele_results.get("survival_results", pd.DataFrame()),
+                 aa_results.get("survival_results", pd.DataFrame())],
+                ignore_index=True,
+            ),
+            "risk_meta": pd.concat(
+                [allele_results.get("risk_meta", pd.DataFrame()),
+                 aa_results.get("risk_meta", pd.DataFrame())],
+                ignore_index=True,
+            ),
+            "survival_meta": pd.concat(
+                [allele_results.get("survival_meta", pd.DataFrame()),
+                 aa_results.get("survival_meta", pd.DataFrame())],
+                ignore_index=True,
+            ),
+            "summary_tables": {
+                **allele_results.get("summary_tables", {}),
+                **aa_results.get("summary_tables", {}),
+            },
+            "sensitivity_risk": pd.concat(
+                [allele_results.get("sensitivity_risk", pd.DataFrame()),
+                 aa_results.get("sensitivity_risk", pd.DataFrame())],
+                ignore_index=True,
+            ),
+            "sensitivity_survival": pd.concat(
+                [allele_results.get("sensitivity_survival", pd.DataFrame()),
+                 aa_results.get("sensitivity_survival", pd.DataFrame())],
+                ignore_index=True,
+            ),
+        }
+
+    else:
+        # ── Run single combined analysis ──
+        results = _run_single_analysis(config, datasets, "all")
+
+        elapsed = time.time() - t_start
+        logger.info("=" * 60)
+        logger.info("Pipeline complete in %.1f seconds", elapsed)
+        logger.info("=" * 60)
+
+        return results
 
 
 def main(argv=None):
