@@ -126,6 +126,44 @@ def _fit_firth_logistic(
     }
 
 
+def _check_extreme_beta(
+    result: Dict[str, Any],
+    max_abs_beta: float,
+) -> Dict[str, Any]:
+    """Post-hoc filter: mark results with extreme beta/SE as unstable.
+
+    Parameters
+    ----------
+    result : dict
+        Result from logistic regression fitting.
+    max_abs_beta : float
+        Threshold for |beta| and SE.
+
+    Returns
+    -------
+    dict
+        Original result if OK, or result with NaN estimates and note.
+    """
+    beta = result.get("beta", np.nan)
+    se = result.get("se", np.nan)
+    if (not np.isnan(beta) and abs(beta) > max_abs_beta) or \
+       (not np.isnan(se) and se > max_abs_beta):
+        logger.debug(
+            "Feature %s: extreme estimate filtered (|beta|=%.2f, SE=%.2f > %.1f)",
+            result.get("feature", "?"), abs(beta) if not np.isnan(beta) else 0,
+            se if not np.isnan(se) else 0, max_abs_beta,
+        )
+        result = dict(result)
+        result["beta"] = np.nan
+        result["se"] = np.nan
+        result["or_val"] = np.nan
+        result["ci_lower"] = np.nan
+        result["ci_upper"] = np.nan
+        result["pvalue"] = np.nan
+        result["note"] = "filtered_extreme_beta"
+    return result
+
+
 def _fit_logistic_single(
     dosage_col: np.ndarray,
     y: np.ndarray,
@@ -133,6 +171,7 @@ def _fit_logistic_single(
     feature_name: str,
     min_carriers: int,
     use_firth: bool = False,
+    max_abs_beta: float = 10.0,
 ) -> Optional[Dict[str, Any]]:
     """Fit a single logistic regression model.
 
@@ -197,7 +236,7 @@ def _fit_logistic_single(
                     z = beta / se if se > 0 else 0.0
                     pvalue = float(2 * sp_stats.norm.sf(abs(z)))
 
-                    return {
+                    return _check_extreme_beta({
                         "feature": feature_name,
                         "converged": True,
                         "method": "firth",
@@ -211,7 +250,7 @@ def _fit_logistic_single(
                         "n_controls": int((~cases_mask).sum()),
                         "carriers_cases": int(carriers_cases),
                         "carriers_controls": int(carriers_controls),
-                    }
+                    }, max_abs_beta)
 
             return {
                 "feature": feature_name,
@@ -254,7 +293,7 @@ def _fit_logistic_single(
                 ci_upper = safe_exp(beta + 1.96 * se)
                 z = beta / se if se > 0 else 0.0
                 pvalue = float(2 * sp_stats.norm.sf(abs(z)))
-                return {
+                return _check_extreme_beta({
                     "feature": feature_name,
                     "converged": True,
                     "method": "firth",
@@ -268,9 +307,9 @@ def _fit_logistic_single(
                     "n_controls": int((~cases_mask).sum()),
                     "carriers_cases": int(carriers_cases),
                     "carriers_controls": int(carriers_controls),
-                }
+                }, max_abs_beta)
 
-        return {
+        return _check_extreme_beta({
             "feature": feature_name,
             "converged": True,
             "method": "standard",
@@ -284,7 +323,7 @@ def _fit_logistic_single(
             "n_controls": int((~cases_mask).sum()),
             "carriers_cases": int(carriers_cases),
             "carriers_controls": int(carriers_controls),
-        }
+        }, max_abs_beta)
 
     except Exception as e:
         logger.debug("Logistic regression failed for %s: %s", feature_name, e)
@@ -301,7 +340,7 @@ def _fit_logistic_single(
                     ci_upper = safe_exp(beta + 1.96 * se)
                     z = beta / se if se > 0 else 0.0
                     pvalue = float(2 * sp_stats.norm.sf(abs(z)))
-                    return {
+                    return _check_extreme_beta({
                         "feature": feature_name,
                         "converged": True,
                         "method": "firth",
@@ -315,7 +354,7 @@ def _fit_logistic_single(
                         "n_controls": int((~cases_mask).sum()),
                         "carriers_cases": int(carriers_cases),
                         "carriers_controls": int(carriers_controls),
-                    }
+                    }, max_abs_beta)
             except Exception:
                 pass
 
@@ -344,6 +383,7 @@ def _process_feature_chunk_risk(
     feature_names: List[str],
     min_carriers: int,
     use_firth: bool = False,
+    max_abs_beta: float = 10.0,
 ) -> List[Dict[str, Any]]:
     """Process a chunk of features for risk analysis.
 
@@ -373,7 +413,7 @@ def _process_feature_chunk_risk(
     for idx in chunk_indices:
         res = _fit_logistic_single(
             dosage_matrix[:, idx], y, X_cov, feature_names[idx], min_carriers,
-            use_firth=use_firth,
+            use_firth=use_firth, max_abs_beta=max_abs_beta,
         )
         if res is not None:
             results.append(res)
@@ -457,6 +497,7 @@ class RiskAnalyzer:
                 feature_names=feature_names,
                 min_carriers=self.config.min_carriers,
                 use_firth=self.config.use_firth,
+                max_abs_beta=self.config.max_abs_beta,
             )
             try:
                 with Pool(processes=workers) as pool:
@@ -470,6 +511,7 @@ class RiskAnalyzer:
                         _process_feature_chunk_risk(
                             chunk, dosage_matrix, y, X_cov, feature_names,
                             self.config.min_carriers, self.config.use_firth,
+                            self.config.max_abs_beta,
                         )
                     )
         else:
@@ -478,6 +520,7 @@ class RiskAnalyzer:
                     _process_feature_chunk_risk(
                         chunk, dosage_matrix, y, X_cov, feature_names,
                         self.config.min_carriers, self.config.use_firth,
+                        self.config.max_abs_beta,
                     )
                 )
 
@@ -534,5 +577,5 @@ class RiskAnalyzer:
         """
         return _fit_logistic_single(
             dosage_col, y, X_cov, feature_name, self.config.min_carriers,
-            use_firth=self.config.use_firth,
+            use_firth=self.config.use_firth, max_abs_beta=self.config.max_abs_beta,
         )

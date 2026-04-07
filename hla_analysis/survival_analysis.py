@@ -239,6 +239,31 @@ def _drop_constant_columns(X: np.ndarray, col_names: List[str]) -> Tuple[np.ndar
     return X[:, keep_mask], [col_names[i] for i in range(len(col_names)) if keep_mask[i]]
 
 
+def _check_extreme_beta_survival(
+    result: Dict[str, Any],
+    max_abs_beta: float,
+) -> Dict[str, Any]:
+    """Post-hoc filter: mark survival results with extreme beta/SE as unstable."""
+    beta = result.get("beta", np.nan)
+    se = result.get("se", np.nan)
+    if (not np.isnan(beta) and abs(beta) > max_abs_beta) or \
+       (not np.isnan(se) and se > max_abs_beta):
+        logger.debug(
+            "Feature %s: extreme survival estimate filtered (|beta|=%.2f, SE=%.2f > %.1f)",
+            result.get("feature", "?"), abs(beta) if not np.isnan(beta) else 0,
+            se if not np.isnan(se) else 0, max_abs_beta,
+        )
+        result = dict(result)
+        result["beta"] = np.nan
+        result["se"] = np.nan
+        result["hr"] = np.nan
+        result["ci_lower"] = np.nan
+        result["ci_upper"] = np.nan
+        result["pvalue"] = np.nan
+        result["note"] = "filtered_extreme_beta"
+    return result
+
+
 def _fit_survival_single(
     dosage_col: np.ndarray,
     time: np.ndarray,
@@ -251,6 +276,7 @@ def _fit_survival_single(
     tol: float = 1e-9,
     penalizer: float = 0.01,
     use_firth: bool = True,
+    max_abs_beta: float = 10.0,
 ) -> Optional[Dict[str, Any]]:
     """Fit a single Cox PH model.
 
@@ -318,7 +344,7 @@ def _fit_survival_single(
             result["n_total"] = n_total
             result["n_events"] = n_events
             result["carrier_events"] = int(carrier_events)
-            return result
+            return _check_extreme_beta_survival(result, max_abs_beta)
         except Exception as e:
             logger.debug("Custom Cox solver failed for %s: %s", feature_name, e)
             # Fall through to lifelines
@@ -349,7 +375,7 @@ def _fit_survival_single(
             pvalue = float(summary.loc[feature_name, "p"])
             conc = float(cph.concordance_index_)
 
-            return {
+            return _check_extreme_beta_survival({
                 "feature": feature_name,
                 "beta": beta,
                 "se": se,
@@ -363,7 +389,7 @@ def _fit_survival_single(
                 "n_events": n_events,
                 "carrier_events": int(carrier_events),
                 "log_likelihood": float(cph.log_likelihood_),
-            }
+            }, max_abs_beta)
         except Exception as e:
             logger.debug("Lifelines Cox PH failed for %s: %s", feature_name, e)
             return {
@@ -396,6 +422,7 @@ def _process_feature_chunk_survival(
     tol: float,
     penalizer: float,
     use_firth: bool = True,
+    max_abs_beta: float = 10.0,
 ) -> List[Dict[str, Any]]:
     """Process a chunk of features for survival analysis."""
     results = []
@@ -403,7 +430,7 @@ def _process_feature_chunk_survival(
         res = _fit_survival_single(
             dosage_matrix[:, idx], time, event, X_cov,
             feature_names[idx], min_events, use_custom, max_iter, tol,
-            penalizer, use_firth,
+            penalizer, use_firth, max_abs_beta,
         )
         if res is not None:
             results.append(res)
@@ -508,6 +535,7 @@ class SurvivalAnalyzer:
                 tol=self.config.cox_tol,
                 penalizer=self.config.cox_penalizer,
                 use_firth=self.config.use_firth,
+                max_abs_beta=self.config.max_abs_beta,
             )
             try:
                 with Pool(processes=workers) as pool:
@@ -523,7 +551,7 @@ class SurvivalAnalyzer:
                             feature_names, self.config.min_events,
                             use_custom, self.config.cox_max_iter,
                             self.config.cox_tol, self.config.cox_penalizer,
-                            self.config.use_firth,
+                            self.config.use_firth, self.config.max_abs_beta,
                         )
                     )
         else:
@@ -534,7 +562,7 @@ class SurvivalAnalyzer:
                         feature_names, self.config.min_events,
                         use_custom, self.config.cox_max_iter,
                         self.config.cox_tol, self.config.cox_penalizer,
-                        self.config.use_firth,
+                        self.config.use_firth, self.config.max_abs_beta,
                     )
                 )
 
@@ -579,4 +607,5 @@ class SurvivalAnalyzer:
             tol=self.config.cox_tol,
             penalizer=self.config.cox_penalizer,
             use_firth=self.config.use_firth,
+            max_abs_beta=self.config.max_abs_beta,
         )

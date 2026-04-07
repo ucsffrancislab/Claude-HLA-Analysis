@@ -120,6 +120,7 @@ class Visualizer:
         if filename is None:
             filename = f"manhattan_{analysis_type}_{stratum}_{strategy}.png"
         path = os.path.join(self.output_dir, filename)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         fig.savefig(path, dpi=self.dpi, bbox_inches="tight")
         plt.close(fig)
         logger.info("Manhattan plot saved: %s", path)
@@ -254,6 +255,7 @@ class Visualizer:
         if filename is None:
             filename = f"forest_{analysis_type}_{stratum}_{strategy}.png"
         path = os.path.join(self.output_dir, filename)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         fig.savefig(path, dpi=self.dpi, bbox_inches="tight")
         plt.close(fig)
         logger.info("Forest plot saved: %s", path)
@@ -332,6 +334,7 @@ class Visualizer:
         if filename is None:
             filename = f"qq_{analysis_type}_{stratum}_{strategy}.png"
         path = os.path.join(self.output_dir, filename)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         fig.savefig(path, dpi=self.dpi, bbox_inches="tight")
         plt.close(fig)
         logger.info("QQ plot saved: %s", path)
@@ -372,6 +375,7 @@ class Visualizer:
         if filename is None:
             filename = f"heatmap_{analysis_type}_{strategy}.png"
         path = os.path.join(self.output_dir, filename)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         fig.savefig(path, dpi=self.dpi, bbox_inches="tight")
         plt.close(fig)
         logger.info("Heatmap saved: %s", path)
@@ -417,6 +421,7 @@ class Visualizer:
         if filename is None:
             filename = f"comparison_full_vs_reduced_{analysis_type}.png"
         path = os.path.join(self.output_dir, filename)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         fig.savefig(path, dpi=self.dpi, bbox_inches="tight")
         plt.close(fig)
         logger.info("Comparison plot saved: %s", path)
@@ -474,6 +479,7 @@ class Visualizer:
         if filename is None:
             filename = f"sensitivity_{analysis_type}.png"
         path = os.path.join(self.output_dir, filename)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         fig.savefig(path, dpi=self.dpi, bbox_inches="tight")
         plt.close(fig)
         logger.info("Sensitivity plot saved: %s", path)

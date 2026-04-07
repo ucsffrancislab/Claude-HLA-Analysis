@@ -27,6 +27,8 @@ from hla_analysis.visualization import Visualizer
 from hla_analysis.sensitivity import create_sensitivity_comparison
 from hla_analysis.vcf_parser import parse_vcf_dosage, parse_vcf_to_dosage_df
 from hla_analysis.haplotype import build_haplotype_dosage_matrix, call_haplotypes
+from hla_analysis.conditional import conditional_analysis
+from hla_analysis.meta_analysis import create_best_adjusted_results
 
 __all__ = [
     "AnalysisConfig",
@@ -42,4 +44,6 @@ __all__ = [
     "parse_vcf_to_dosage_df",
     "build_haplotype_dosage_matrix",
     "call_haplotypes",
+    "conditional_analysis",
+    "create_best_adjusted_results",
 ]

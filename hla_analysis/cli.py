@@ -108,8 +108,18 @@ Examples:
         help="HLA feature types to include (default: all).",
     )
     analysis_group.add_argument(
+        "--best-adjusted-meta", action="store_true", default=False,
+        help="Run best-adjusted meta-analysis (picks most-adjusted valid strategy per dataset). "
+             "Enabled by default when --sensitivity-analysis is set.",
+    )
+    analysis_group.add_argument(
         "--split-by-feature-type", action="store_true", default=True,
         help="Run separate analyses for alleles and amino acid positions (default: True).",
+    )
+    analysis_group.add_argument(
+        "--conditional-analysis", default=None, metavar="FEATURE",
+        help="Run conditional analysis for this feature (e.g. HLA_DPB1_04:01). "
+             "Tests whether signal is independent of nearby features.",
     )
     analysis_group.add_argument(
         "--no-split-by-feature-type", dest="split_by_feature_type", action="store_false",
@@ -185,6 +195,11 @@ Examples:
     firth_group.add_argument(
         "--no-firth", dest="use_firth", action="store_false",
         help="Disable Firth's penalized logistic regression.",
+    )
+    firth_group.add_argument(
+        "--max-abs-beta", type=float, default=10.0,
+        help="Maximum |beta| and SE threshold; estimates above this are marked "
+             "as unstable (default: 10.0).",
     )
 
     # ── HPC / Parallelism ──
@@ -332,6 +347,9 @@ def parse_args(argv: Optional[List[str]] = None) -> AnalysisConfig:
         haplotype_loci=args.haplotype_loci,
         haplotype_resolution=args.haplotype_resolution,
         min_haplotype_freq=args.min_haplotype_freq,
+        max_abs_beta=args.max_abs_beta,
+        best_adjusted_meta=args.best_adjusted_meta or args.sensitivity_analysis,
+        conditional_target=args.conditional_analysis,
     )
 
     return config

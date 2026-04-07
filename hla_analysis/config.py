@@ -184,6 +184,7 @@ class AnalysisConfig:
 
     # Firth's penalized regression
     use_firth: bool = True
+    max_abs_beta: float = 10.0
 
     # HPC / parallelism
     workers: int = -1  # -1 = auto-detect
@@ -207,6 +208,12 @@ class AnalysisConfig:
     haplotype_loci: List[str] = field(default_factory=lambda: ["A", "B", "C", "DRB1", "DQB1"])
     haplotype_resolution: str = "4digit"  # "2digit", "4digit", or "both"
     min_haplotype_freq: float = 0.01
+
+    # Best-adjusted meta-analysis
+    best_adjusted_meta: bool = False
+
+    # Conditional analysis
+    conditional_target: Optional[str] = None
 
     # Logging & reproducibility
     log_level: str = "INFO"
@@ -291,6 +298,8 @@ class AnalysisConfig:
             raise ValueError("min_haplotype_freq must be in [0, 1]")
         if self.haplotype_loci is not None and not isinstance(self.haplotype_loci, list):
             raise ValueError("haplotype_loci must be a list of strings")
+        if self.max_abs_beta <= 0:
+            raise ValueError("max_abs_beta must be > 0")
 
         if self.dosage_format not in ("auto", "csv", "vcf"):
             raise ValueError(

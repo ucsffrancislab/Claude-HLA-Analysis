@@ -184,6 +184,18 @@ def _run_single_analysis(
                             y = cov.loc[final_mask, "case"].values.astype(np.float64)
                             dosage_sub = dosage_sub_type[final_mask]
 
+                            # Fix 1: early skip if insufficient cases/controls after covariate filtering
+                            n_cases_final = int((y == 1).sum())
+                            n_ctrls_final = int((y == 0).sum())
+                            if n_cases_final < config.min_carriers or n_ctrls_final < config.min_carriers:
+                                logger.warning(
+                                    "Skipping risk: %s/%s/%s — after covariate filtering: "
+                                    "cases=%d, controls=%d < min_carriers=%d",
+                                    ds_name, stratum, strategy_name,
+                                    n_cases_final, n_ctrls_final, config.min_carriers,
+                                )
+                                continue
+
                             risk_df = risk_analyzer.analyze_stratum(
                                 dosage_sub, y, X_cov, features_sub,
                                 ds_name, stratum, strategy_name, used_covs,
@@ -216,7 +228,16 @@ def _run_single_analysis(
                             event_vals = cov.loc[final_mask_s, "vstatus"].values.astype(np.float64)
                             dosage_sub_s = dosage_sub_type[final_mask_s]
 
+                            # Fix 1: early skip if insufficient events after covariate filtering
                             n_events = int(event_vals.sum())
+                            if n_events < config.min_events:
+                                logger.warning(
+                                    "Skipping survival: %s/%s/%s — after covariate "
+                                    "filtering: events=%d < min_events=%d",
+                                    ds_name, stratum, strategy_name,
+                                    n_events, config.min_events,
+                                )
+                                continue
                             if n_events < 2:
                                 logger.warning("Skipping survival: %s/%s/%s — <2 events",
                                                ds_name, stratum, strategy_name)
@@ -288,6 +309,35 @@ def _run_single_analysis(
             surv_meta.to_csv(path, index=False)
             logger.info("Saved survival meta-analysis: %s (%d rows)", path, len(surv_meta))
 
+    # ── Best-adjusted meta-analysis ──
+    risk_meta_best = pd.DataFrame()
+    surv_meta_best = pd.DataFrame()
+
+    if config.best_adjusted_meta:
+        from hla_analysis.meta_analysis import create_best_adjusted_results
+
+        if not risk_combined.empty and len(datasets) >= config.meta_min_datasets:
+            best_risk = create_best_adjusted_results(risk_combined)
+            if not best_risk.empty:
+                risk_meta_best = meta_analyzer.run_meta_analysis(
+                    best_risk, analysis_type="risk"
+                )
+                if not risk_meta_best.empty:
+                    path = os.path.join(config.output_dir, "risk_meta_analysis_best_adjusted.csv")
+                    risk_meta_best.to_csv(path, index=False)
+                    logger.info("Saved best-adjusted risk meta: %s (%d rows)", path, len(risk_meta_best))
+
+        if not surv_combined.empty and len(datasets) >= config.meta_min_datasets:
+            best_surv = create_best_adjusted_results(surv_combined)
+            if not best_surv.empty:
+                surv_meta_best = meta_analyzer.run_meta_analysis(
+                    best_surv, analysis_type="survival"
+                )
+                if not surv_meta_best.empty:
+                    path = os.path.join(config.output_dir, "survival_meta_analysis_best_adjusted.csv")
+                    surv_meta_best.to_csv(path, index=False)
+                    logger.info("Saved best-adjusted survival meta: %s (%d rows)", path, len(surv_meta_best))
+
     # ── Summary tables ──
     summary = create_summary_tables(risk_meta, surv_meta, config.fdr_threshold)
     for name, table in summary.items():
@@ -349,14 +399,75 @@ def _run_single_analysis(
             if not sens_surv.empty:
                 viz.sensitivity_plot(sens_surv, "survival")
 
+    # ── Conditional analysis ──
+    conditional_results = pd.DataFrame()
+    if config.conditional_target:
+        from hla_analysis.conditional import conditional_analysis
+
+        logger.info("Running conditional analysis for target: %s", config.conditional_target)
+        cond_rows = []
+        for ds in datasets:
+            ds_name = ds["dataset_name"]
+            cov = ds["covariates"]
+            dosage = ds["dosage"]
+            features = ds["feature_names"]
+
+            for stratum in config.strata:
+                try:
+                    if "risk" in config.analyses:
+                        case_idx, ctrl_idx = loader.get_stratum_indices(cov, stratum)
+                        combined_idx = case_idx | ctrl_idx
+                        y_cond = cov.loc[combined_idx, "case"].values.astype(np.float64)
+                        dosage_cond = dosage[combined_idx]
+                        cond_df = conditional_analysis(
+                            dosage_cond, features, config.conditional_target,
+                            y=y_cond, analysis_type="risk",
+                        )
+                        if not cond_df.empty:
+                            cond_df["dataset"] = ds_name
+                            cond_df["stratum"] = stratum
+                            cond_df["analysis_type"] = "risk"
+                            cond_rows.append(cond_df)
+
+                    if "survival" in config.analyses:
+                        surv_idx = loader.get_survival_indices(cov, stratum)
+                        if surv_idx.sum() >= 5:
+                            time_c = cov.loc[surv_idx, "survdays"].values.astype(np.float64)
+                            event_c = cov.loc[surv_idx, "vstatus"].values.astype(np.float64)
+                            dosage_c = dosage[surv_idx]
+                            cond_df = conditional_analysis(
+                                dosage_c, features, config.conditional_target,
+                                time=time_c, event=event_c,
+                                analysis_type="survival",
+                            )
+                            if not cond_df.empty:
+                                cond_df["dataset"] = ds_name
+                                cond_df["stratum"] = stratum
+                                cond_df["analysis_type"] = "survival"
+                                cond_rows.append(cond_df)
+                except Exception as e:
+                    logger.error("Conditional analysis failed: %s/%s: %s",
+                                 ds_name, stratum, e, exc_info=True)
+
+        if cond_rows:
+            conditional_results = pd.concat(cond_rows, ignore_index=True)
+            # Sanitise target name for filename
+            safe_name = config.conditional_target.replace("*", "_").replace(":", "_")
+            path = os.path.join(config.output_dir, f"conditional_analysis_{safe_name}.csv")
+            conditional_results.to_csv(path, index=False)
+            logger.info("Saved conditional analysis: %s (%d rows)", path, len(conditional_results))
+
     return {
         "risk_results": risk_combined,
         "survival_results": surv_combined,
         "risk_meta": risk_meta,
         "survival_meta": surv_meta,
+        "risk_meta_best_adjusted": risk_meta_best,
+        "survival_meta_best_adjusted": surv_meta_best,
         "summary_tables": summary,
         "sensitivity_risk": sens_risk,
         "sensitivity_survival": sens_surv,
+        "conditional_results": conditional_results,
     }
 
 

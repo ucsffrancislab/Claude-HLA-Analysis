@@ -172,6 +172,94 @@ def random_effects(betas: np.ndarray, ses: np.ndarray) -> Dict[str, float]:
     }
 
 
+
+# Default strategy preference order for best-adjusted meta-analysis
+DEFAULT_STRATEGY_PREFERENCE = [
+    "all_covariates", "full",
+    # drop_* strategies are inserted dynamically
+    "reduced", "no_covariates",
+]
+
+
+def create_best_adjusted_results(
+    per_dataset_results: pd.DataFrame,
+    strategy_preference: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """For each dataset × feature × stratum, pick the most-adjusted valid strategy.
+
+    This enables a single meta-analysis across datasets even when different
+    datasets succeed with different covariate strategies (e.g. TCGA may only
+    have valid results from ``drop_age`` while CIDR works with ``all_covariates``).
+
+    Parameters
+    ----------
+    per_dataset_results : pd.DataFrame
+        Combined per-dataset results with columns including ``dataset``,
+        ``feature``, ``stratum``, ``strategy``, ``beta``, ``se``, ``converged``.
+    strategy_preference : list of str, optional
+        Ordered preference list.  If *None*, uses the default:
+        ``all_covariates > full > drop_* (sorted) > reduced > no_covariates``.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per dataset × feature × stratum, with
+        ``strategy='best_adjusted'`` and a ``source_strategy`` column
+        indicating which original strategy was selected.
+    """
+    if per_dataset_results.empty:
+        return pd.DataFrame()
+
+    # Build strategy preference order
+    if strategy_preference is None:
+        # Discover drop_* strategies and sort them
+        all_strategies = per_dataset_results["strategy"].unique()
+        drop_strategies = sorted(s for s in all_strategies if s.startswith("drop_"))
+        strategy_preference = (
+            ["all_covariates", "full"]
+            + drop_strategies
+            + ["reduced", "no_covariates"]
+        )
+
+    # Create priority mapping (lower = higher priority)
+    priority = {s: i for i, s in enumerate(strategy_preference)}
+    # Strategies not in the preference list get the lowest priority
+    max_priority = len(strategy_preference)
+
+    # Filter to valid (converged, non-NaN beta/se) results
+    valid = per_dataset_results[
+        per_dataset_results["converged"].astype(bool) &
+        per_dataset_results["beta"].notna() &
+        per_dataset_results["se"].notna() &
+        (per_dataset_results["se"] > 0)
+    ].copy()
+
+    if valid.empty:
+        return pd.DataFrame()
+
+    # Assign priority
+    valid["_priority"] = valid["strategy"].map(
+        lambda s: priority.get(s, max_priority)
+    )
+
+    # For each dataset × feature × stratum, pick the row with lowest priority
+    group_cols = ["dataset", "feature", "stratum"]
+    idx = valid.groupby(group_cols)["_priority"].idxmin()
+    best = valid.loc[idx].copy()
+
+    # Tag the result
+    best["source_strategy"] = best["strategy"]
+    best["strategy"] = "best_adjusted"
+    best = best.drop(columns=["_priority"])
+
+    logger.info(
+        "Best-adjusted selection: %d rows selected from %d valid results",
+        len(best), len(valid),
+    )
+
+    return best.reset_index(drop=True)
+
+
 class MetaAnalyzer:
     """Meta-analysis across datasets for each HLA feature.
 
