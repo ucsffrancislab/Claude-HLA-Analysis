@@ -121,7 +121,7 @@ Examples:
         help="Run ONLY conditional analysis (skip risk/survival/meta). "
              "Requires --conditional-analysis.",
     )
-    cond_group.add_argument(
+    analysis_group.add_argument(
         "--conditional-analysis", default=None, metavar="FEATURE",
         help="Run conditional analysis for this feature (e.g. HLA_DPB1_04:01). "
              "Tests whether signal is independent of nearby features.",
