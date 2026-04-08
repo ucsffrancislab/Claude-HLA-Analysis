@@ -166,7 +166,15 @@ def conditional_analysis(
     pd.DataFrame
         One row per nearby feature with unconditional and conditional results.
     """
-    if target_feature not in feature_names:
+    # Normalize target name (CLI may use * but features use _ after VCF parsing)
+    target_feature_norm = target_feature.replace("*", "_")
+    # Try both raw and normalized forms
+    if target_feature in feature_names:
+        pass  # exact match
+    elif target_feature_norm in feature_names:
+        logger.info("Normalized target feature: %s -> %s", target_feature, target_feature_norm)
+        target_feature = target_feature_norm
+    else:
         logger.warning("Target feature %s not found in feature list", target_feature)
         return pd.DataFrame()
 

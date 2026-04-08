@@ -214,6 +214,7 @@ class AnalysisConfig:
 
     # Conditional analysis
     conditional_target: Optional[str] = None
+    conditional_only: bool = False
 
     # Logging & reproducibility
     log_level: str = "INFO"

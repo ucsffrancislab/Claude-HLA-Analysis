@@ -132,8 +132,11 @@ def _run_single_analysis(
     all_risk_results = []
     all_survival_results = []
 
+    # Skip main analysis if --conditional-only
+    _run_associations = not getattr(config, "conditional_only", False)
+
     # ── Per-dataset analysis ──
-    for ds in datasets:
+    for ds in (_run_associations and datasets or []):
         ds_name = ds["dataset_name"]
         cov = ds["covariates"]
         dosage = ds["dosage"]
@@ -293,14 +296,14 @@ def _run_single_analysis(
     risk_meta = pd.DataFrame()
     surv_meta = pd.DataFrame()
 
-    if not risk_combined.empty and len(datasets) >= config.meta_min_datasets:
+    if _run_associations and not risk_combined.empty and len(datasets) >= config.meta_min_datasets:
         risk_meta = meta_analyzer.run_meta_analysis(risk_combined, analysis_type="risk")
         if not risk_meta.empty:
             path = os.path.join(config.output_dir, "risk_meta_analysis.csv")
             risk_meta.to_csv(path, index=False)
             logger.info("Saved risk meta-analysis: %s (%d rows)", path, len(risk_meta))
 
-    if not surv_combined.empty and len(datasets) >= config.meta_min_datasets:
+    if _run_associations and not surv_combined.empty and len(datasets) >= config.meta_min_datasets:
         surv_meta = meta_analyzer.run_meta_analysis(
             surv_combined, analysis_type="survival"
         )
