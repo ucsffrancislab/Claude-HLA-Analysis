@@ -117,6 +117,11 @@ Examples:
         help="Run separate analyses for alleles and amino acid positions (default: True).",
     )
     analysis_group.add_argument(
+        "--conditional-only", action="store_true", default=False,
+        help="Run ONLY conditional analysis (skip risk/survival/meta). "
+             "Requires --conditional-analysis.",
+    )
+    cond_group.add_argument(
         "--conditional-analysis", default=None, metavar="FEATURE",
         help="Run conditional analysis for this feature (e.g. HLA_DPB1_04:01). "
              "Tests whether signal is independent of nearby features.",
@@ -350,6 +355,7 @@ def parse_args(argv: Optional[List[str]] = None) -> AnalysisConfig:
         max_abs_beta=args.max_abs_beta,
         best_adjusted_meta=args.best_adjusted_meta or args.sensitivity_analysis,
         conditional_target=args.conditional_analysis,
+        conditional_only=args.conditional_only,
     )
 
     return config
