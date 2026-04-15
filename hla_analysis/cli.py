@@ -190,6 +190,11 @@ Examples:
         "--min-imputation-r2", type=float, default=0.3,
         help="Minimum imputation R² for feature inclusion (default: 0.3).",
     )
+    thresh_group.add_argument(
+        "--hwe-threshold", type=float, default=1e-6,
+        help="HWE p-value threshold; features with p < threshold in controls are excluded "
+             "(default: 1e-6). Set to 1.0 to disable.",
+    )
 
     # ── Firth Penalization ──
     firth_group = parser.add_argument_group("Firth Penalization")
@@ -334,6 +339,7 @@ def parse_args(argv: Optional[List[str]] = None) -> AnalysisConfig:
         maf_threshold_allele=args.maf_threshold_allele,
         maf_threshold_aa=args.maf_threshold_aa,
         min_imputation_r2=args.min_imputation_r2,
+        hwe_threshold=args.hwe_threshold,
         use_firth=args.use_firth,
         workers=args.workers,
         memory_limit=args.memory_limit,

@@ -34,6 +34,61 @@ def compute_maf(dosage_col: np.ndarray) -> float:
     return float(np.mean(valid) / 2.0)
 
 
+def compute_hwe_pvalue(dosage_col: np.ndarray) -> float:
+    """Compute Hardy-Weinberg Equilibrium p-value from dosage data.
+
+    Rounds dosages to hard calls (0/1/2), counts genotypes, and runs
+    a chi-squared goodness-of-fit test against HWE expectations.
+
+    Parameters
+    ----------
+    dosage_col : np.ndarray
+        Dosage values (0–2 scale).
+
+    Returns
+    -------
+    float
+        HWE chi-squared p-value. Returns 1.0 if the test cannot be computed.
+    """
+    from scipy.stats import chi2
+
+    valid = dosage_col[~np.isnan(dosage_col)]
+    if len(valid) < 10:
+        return 1.0
+
+    # Round to hard calls
+    hard = np.round(valid).astype(int)
+    hard = np.clip(hard, 0, 2)
+
+    n0 = (hard == 0).sum()  # homozygous ref
+    n1 = (hard == 1).sum()  # heterozygous
+    n2 = (hard == 2).sum()  # homozygous alt
+    n = n0 + n1 + n2
+
+    if n == 0:
+        return 1.0
+
+    # Allele frequency
+    p = (2 * n2 + n1) / (2 * n)
+    q = 1.0 - p
+
+    if p <= 0 or q <= 0:
+        return 1.0
+
+    # Expected genotype counts under HWE
+    e0 = n * q * q
+    e1 = n * 2 * p * q
+    e2 = n * p * p
+
+    # Chi-squared test (1 df)
+    chi2_stat = 0.0
+    for obs, exp in [(n0, e0), (n1, e1), (n2, e2)]:
+        if exp > 0:
+            chi2_stat += (obs - exp) ** 2 / exp
+
+    return float(chi2.sf(chi2_stat, 1))
+
+
 class DataLoader:
     """Load, validate, and prepare HLA dosage + covariate data.
 
@@ -177,6 +232,29 @@ class DataLoader:
                 merged[col] = pd.to_numeric(merged[col], errors="coerce")
 
         # Extract dosage matrix as float32
+        
+        # ── HWE filtering (controls only) ──
+        if self.config.hwe_threshold < 1.0 and "case" in merged.columns:
+            ctrl_mask = merged["case"] == 0
+            if ctrl_mask.sum() >= 10:
+                before_hwe = len(selected_features)
+                hwe_passed = []
+                for feat in selected_features:
+                    ctrl_dosages = merged.loc[ctrl_mask, feat].values
+                    hwe_p = compute_hwe_pvalue(ctrl_dosages)
+                    if hwe_p >= self.config.hwe_threshold:
+                        hwe_passed.append(feat)
+                n_dropped_hwe = before_hwe - len(hwe_passed)
+                if n_dropped_hwe > 0:
+                    logger.info(
+                        "Dataset %s: dropped %d features failing HWE (p < %.1e) in controls (%d remain)",
+                        dataset_name, n_dropped_hwe, self.config.hwe_threshold, len(hwe_passed),
+                    )
+                selected_features = hwe_passed
+            else:
+                logger.warning("Dataset %s: too few controls (%d) for HWE filtering, skipping",
+                               dataset_name, ctrl_mask.sum())
+
         dosage_matrix = merged[selected_features].values.astype(np.float32)
 
         # Covariate columns (everything except features and sample_id)

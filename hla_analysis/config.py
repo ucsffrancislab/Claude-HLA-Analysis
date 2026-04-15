@@ -136,6 +136,8 @@ class AnalysisConfig:
         MAF threshold for amino acid positions (default 0.5%).
     min_imputation_r2 : float
         Minimum imputation R² for feature inclusion (default 0.3).
+    hwe_threshold : float
+        HWE p-value threshold for feature exclusion in controls (default 1e-6).
     use_firth : bool
         Use Firth's penalized logistic regression for risk analysis.
     max_forest_signals : int
@@ -181,6 +183,7 @@ class AnalysisConfig:
     maf_threshold_allele: float = 0.01    # 1% for classical alleles
     maf_threshold_aa: float = 0.005       # 0.5% for amino acid positions
     min_imputation_r2: float = 0.3        # R² quality filter
+    hwe_threshold: float = 1e-6           # HWE p-value filter (controls only)
 
     # Firth's penalized regression
     use_firth: bool = True
